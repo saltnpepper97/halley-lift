@@ -864,9 +864,9 @@ dependencies = [
 
 [[package]]
 name = "halley-ui"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7883099bb99d55b33c0300e4d83271794afce9eeb7e079f3d6ed3c218fd19ec"
+checksum = "e48f30e4516be3418cb009f6b022f4b6f046acb6a33891fb65845e720ed0d7ed"
 dependencies = [
  "accesskit",
  "accesskit_unix",

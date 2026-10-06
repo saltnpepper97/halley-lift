@@ -258,3 +258,5 @@ cargo clippy --locked --all-targets -- -D warnings
 ```
 
 `HALLEY_LIFT_PERF=1 halley-lift` reports startup and frame timings to stderr.
+
+A bounded before/after native drawing comparison is recorded in [the performance notes](docs/performance.md).

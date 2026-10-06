@@ -711,5 +711,19 @@ mod tests {
         assert_eq!(edited, "work");
         let edited = renderer.edit(&edited, InputEvent::Text("space".into()));
         assert_eq!(edited, "workspace");
+        renderer.edit(
+            &edited,
+            InputEvent::KeyDown {
+                key: Key::A,
+                modifiers: Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                },
+            },
+        );
+        assert_eq!(
+            renderer.edit(&edited, InputEvent::Text("node".into())),
+            "node"
+        );
     }
 }
