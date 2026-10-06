@@ -11,7 +11,7 @@ local desktop entries, with eight visible rows. No application was activated.
 | --- | --- | --- |
 | Empty search | 1.10 ms | 0.88 ms |
 | App results | 9.58 ms | 7.11 ms |
-| Cluster-mode search | 9.65 ms | 7.05 ms |
+| Cluster-mode search | 9.56 ms | 7.26 ms |
 
 These are small local samples of the existing draw timer, excluding the first
 frame (six or seven warm samples per fixture). They include host buffer setup,
