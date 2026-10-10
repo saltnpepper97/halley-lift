@@ -1024,7 +1024,7 @@ mod api_tests {
         }
     }
 
-    fn fake_action(stall_hello: bool, stall_action: bool) {
+    fn fake_action(stall_hello: bool, stall_action: bool, focus_node: Option<u64>) {
         let fixture = SocketFixture::new();
         let listener = UnixListener::bind(fixture.socket()).unwrap();
         let (release, blocked) = mpsc::channel();
@@ -1047,10 +1047,20 @@ mod api_tests {
                     capabilities: Vec::new(),
                 }),
             );
-            assert!(matches!(
-                request(&stream),
-                Request::Control(ControlRequest::ShowBasics)
-            ));
+            let action = request(&stream);
+            if let Some(expected) = focus_node {
+                assert!(
+                    matches!(action, Request::Node(halley_ipc::NodeRequest::Focus {
+                    selector: Some(halley_ipc::NodeSelector::Id(actual)), output: None,
+                }) if actual == expected),
+                    "{action:?}"
+                );
+            } else {
+                assert!(matches!(
+                    action,
+                    Request::Control(ControlRequest::ShowBasics)
+                ));
+            }
             if stall_action {
                 let _ = blocked.recv_timeout(Duration::from_secs(6));
             } else {
@@ -1060,7 +1070,33 @@ mod api_tests {
         let mut options = api_options();
         options.socket_path = Some(fixture.socket());
         let started = Instant::now();
-        let result = Activation::Compositor(LiftAction::ShowBasics).execute_with_options(options);
+        let activation = if let Some(id) = focus_node {
+            let index = ProviderIndex {
+                nodes: vec![CachedNode {
+                    id,
+                    title: "Mozilla Firefox".into(),
+                    subtitle: "Running on DP-2".into(),
+                    search_text: "mozilla firefox".into(),
+                    pinned: false,
+                }],
+                ..Default::default()
+            };
+            let results = index.search(&SearchContext {
+                mode: LiftMode::General,
+                query: "firefox".into(),
+                query_lower: "firefox".into(),
+                max_results: 8,
+                draft_count: 0,
+            });
+            let selected = results
+                .iter()
+                .find(|result| result.kind == LiftResultKind::Node)
+                .unwrap();
+            prepare_activation(&index, selected).unwrap()
+        } else {
+            Activation::Compositor(LiftAction::ShowBasics)
+        };
+        let result = activation.execute_with_options(options);
         let elapsed = started.elapsed();
         let _ = release.send(());
         server.join().unwrap();
@@ -1080,7 +1116,7 @@ mod api_tests {
         if run_in_private_runtime("providers::api_tests::stalled_handshake_times_out") {
             return;
         }
-        fake_action(true, false);
+        fake_action(true, false, None);
     }
 
     #[test]
@@ -1088,7 +1124,7 @@ mod api_tests {
         if run_in_private_runtime("providers::api_tests::stalled_action_reply_times_out") {
             return;
         }
-        fake_action(false, true);
+        fake_action(false, true, None);
     }
 
     #[test]
@@ -1096,7 +1132,17 @@ mod api_tests {
         if run_in_private_runtime("providers::api_tests::acknowledged_action_succeeds") {
             return;
         }
-        fake_action(false, false);
+        fake_action(false, false, None);
+    }
+
+    #[test]
+    fn selected_running_node_sends_exact_focus_request() {
+        if run_in_private_runtime(
+            "providers::api_tests::selected_running_node_sends_exact_focus_request",
+        ) {
+            return;
+        }
+        fake_action(false, false, Some(0x1_0000_0020));
     }
 
     #[test]
