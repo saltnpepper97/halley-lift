@@ -2,13 +2,13 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::Duration;
 
 use halley_api::{
-    Client, ClusterDraft as ApiClusterDraft, ClusterDraftApp, ClusterTarget, Event, EventTopic,
-    NodeId, NodeKind, NodeSelector,
+    Client, ClusterDraft as ApiClusterDraft, ClusterDraftApp, ClusterTarget, ConnectOptions, Event,
+    EventTopic, NodeId, NodeKind, NodeSelector,
 };
 
 use crate::config::{LiftConfig, default_config_path, resolved_halley_config_path};
@@ -34,7 +34,14 @@ pub struct ProviderIndex {
     live_wake: Option<calloop::channel::Sender<()>>,
     terminal: String,
     terminal_icon_name: Option<String>,
-    client: Option<Arc<Client>>,
+}
+
+fn api_options() -> ConnectOptions {
+    ConnectOptions {
+        read_timeout: Some(Duration::from_secs(2)),
+        write_timeout: Some(Duration::from_secs(2)),
+        ..Default::default()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +77,6 @@ impl ProviderIndex {
         let apps = load_desktop_apps();
         let terminal = config.terminal.trim().to_string();
         let terminal_icon_name = terminal_icon_name_for_apps(&apps, terminal.as_str());
-        let client = Client::connect().map(Arc::new).ok();
         Self {
             apps,
             nodes: Vec::new(),
@@ -80,7 +86,6 @@ impl ProviderIndex {
             live_wake: None,
             terminal,
             terminal_icon_name,
-            client,
         }
     }
 
@@ -97,10 +102,11 @@ impl ProviderIndex {
             return;
         }
         let (tx, rx) = mpsc::channel();
-        let client = self.client.clone();
         let wake = self.live_wake.clone();
         thread::spawn(move || {
-            let Some(client) = client else {
+            // Connect on this worker rather than the joined startup worker.
+            // A stalled API handshake must not delay the window.
+            let Ok(client) = Client::connect_with(api_options()) else {
                 let _ = tx.send((Vec::new(), Vec::new()));
                 if let Some(wake) = wake.as_ref() {
                     let _ = wake.send(());
@@ -323,15 +329,6 @@ impl ProviderIndex {
         }]
     }
 
-    pub fn launch_app(&self, app_id: &str) -> Result<(), String> {
-        let app = self
-            .apps
-            .iter()
-            .find(|app| app.id == app_id)
-            .ok_or_else(|| format!("app `{app_id}` not found"))?;
-        launch_exec(app.exec.as_str(), app.terminal, self.terminal.as_str())
-    }
-
     fn draft_app_launches(&self, app_ids: &[String]) -> Vec<ClusterDraftApp> {
         app_ids
             .iter()
@@ -512,35 +509,99 @@ fn search_config(ctx: &SearchContext) -> Vec<LiftResult> {
         .collect()
 }
 
-pub fn activate_result(index: &ProviderIndex, result: &LiftResult) -> Result<(), String> {
-    match &result.action {
-        LiftAction::LaunchApp { app_id } => index.launch_app(app_id),
-        LiftAction::OpenCluster { id } => index
-            .client()?
-            .open_cluster(ClusterTarget::Id((*id).into()), None)
-            .map_err(|error| error.to_string()),
-        LiftAction::FocusNode { id } => index
-            .client()?
-            .focus_node(Some(NodeSelector::Id(NodeId::new(*id))), None)
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        LiftAction::ReloadConfig => index
-            .client()?
-            .reload_config()
-            .map_err(|error| error.to_string()),
-        LiftAction::ShowBasics => index
-            .client()?
-            .show_basics()
-            .map_err(|error| error.to_string()),
-        LiftAction::OpenConfig { path } => launch_editor(path, index.terminal.as_str()),
-        LiftAction::CreateCluster => Ok(()),
+pub enum Activation {
+    Launch {
+        command: String,
+        terminal: bool,
+        terminal_command: String,
+    },
+    OpenEditor {
+        path: String,
+        terminal_command: String,
+    },
+    Compositor(LiftAction),
+    ClusterDraft(ApiClusterDraft),
+}
+
+impl Activation {
+    pub fn execute(self) -> Result<(), String> {
+        self.execute_with_options(api_options())
+    }
+
+    fn execute_with_options(self, options: ConnectOptions) -> Result<(), String> {
+        match self {
+            Self::Launch {
+                command,
+                terminal,
+                terminal_command,
+            } => launch_exec(&command, terminal, &terminal_command),
+            Self::OpenEditor {
+                path,
+                terminal_command,
+            } => launch_editor(&path, &terminal_command),
+            Self::Compositor(action) => {
+                // Each activation owns its connection: a background query cannot
+                // hold its lock, and a failed request is never retried implicitly.
+                let client = Client::connect_with(options).map_err(|error| error.to_string())?;
+                match action {
+                    LiftAction::OpenCluster { id } => {
+                        client.open_cluster(ClusterTarget::Id(id.into()), None)
+                    }
+                    LiftAction::FocusNode { id } => {
+                        client.focus_node(Some(NodeSelector::Id(NodeId::new(id))), None)
+                    }
+                    LiftAction::ReloadConfig => client.reload_config(),
+                    LiftAction::ShowBasics => client.show_basics(),
+                    _ => return Err("Invalid compositor action".into()),
+                }
+                .map_err(|error| error.to_string())
+            }
+            Self::ClusterDraft(request) => Client::connect_with(options)
+                .map_err(|error| error.to_string())?
+                .finalize_cluster_draft(request, None)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+        }
+    }
+}
+
+pub fn prepare_activation(
+    index: &ProviderIndex,
+    result: &LiftResult,
+) -> Result<Activation, String> {
+    Ok(match &result.action {
+        LiftAction::LaunchApp { app_id } => {
+            let app = index
+                .apps
+                .iter()
+                .find(|app| app.id == *app_id)
+                .ok_or_else(|| format!("app `{app_id}` not found"))?;
+            Activation::Launch {
+                command: app.exec.clone(),
+                terminal: app.terminal,
+                terminal_command: index.terminal.clone(),
+            }
+        }
+        LiftAction::OpenCluster { .. }
+        | LiftAction::FocusNode { .. }
+        | LiftAction::ReloadConfig
+        | LiftAction::ShowBasics => Activation::Compositor(result.action.clone()),
+        LiftAction::OpenConfig { path } => Activation::OpenEditor {
+            path: path.clone(),
+            terminal_command: index.terminal.clone(),
+        },
+        LiftAction::CreateCluster => return Err("Use a cluster draft to create a cluster".into()),
         LiftAction::RunInTerminal { command } => {
             // Run through the user's interactive shell so aliases/functions are loaded,
             // then exec back into that shell so short commands like `ls` stay visible.
             let full = terminal_launch_command(index.terminal.as_str(), command.as_str());
-            launch_exec(full.as_str(), false, index.terminal.as_str())
+            Activation::Launch {
+                command: full,
+                terminal: false,
+                terminal_command: index.terminal.clone(),
+            }
         }
-    }
+    })
 }
 
 fn terminal_launch_command(terminal_command: &str, command: &str) -> String {
@@ -578,17 +639,12 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "sh".into())
 }
 
-pub fn materialize_cluster_draft(
+pub fn prepare_cluster_draft(
     index: &ProviderIndex,
     draft: &ClusterDraft,
     _query: &str,
-) -> Result<(), String> {
-    let request = build_cluster_draft_request(index, draft);
-    index
-        .client()?
-        .finalize_cluster_draft(request, None)
-        .map_err(|error| error.to_string())?;
-    Ok(())
+) -> Activation {
+    Activation::ClusterDraft(build_cluster_draft_request(index, draft))
 }
 
 fn build_cluster_draft_request(index: &ProviderIndex, draft: &ClusterDraft) -> ApiClusterDraft {
@@ -682,14 +738,6 @@ fn shell_words(command: &str) -> Vec<String> {
         words.push(current);
     }
     words
-}
-
-impl ProviderIndex {
-    fn client(&self) -> Result<&Client, String> {
-        self.client
-            .as_deref()
-            .ok_or_else(|| "Halley compositor API is unavailable".into())
-    }
 }
 
 fn provider_rank(kind: &LiftResultKind) -> u8 {
@@ -975,7 +1023,6 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: String::new(),
             terminal_icon_name: None,
-            client: None,
         };
         let results = index.search(&SearchContext {
             mode: LiftMode::Clusters,
@@ -1015,7 +1062,6 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: "kitty -e".into(),
             terminal_icon_name: None,
-            client: None,
         }
     }
 
@@ -1270,7 +1316,6 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: "foot -e".into(),
             terminal_icon_name: None,
-            client: None,
         };
         let draft = ClusterDraft {
             app_ids: vec!["kitty".into()],

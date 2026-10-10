@@ -4,6 +4,7 @@
     clippy::type_complexity
 )]
 
+mod activation;
 mod blur;
 mod config;
 mod icons;
@@ -26,7 +27,9 @@ use config::{LiftConfig, bootstrap_default_config, default_config_path};
 use icons::IconCache;
 use mode::{LiftMode, ModeInputState, effective_mode_query, parse_initial_mode};
 use model::{ClusterDraft, LiftAction, LiftResult, LiftResultKind};
-use providers::{ProviderIndex, SearchContext, activate_result, materialize_cluster_draft};
+use providers::{
+    Activation, ProviderIndex, SearchContext, prepare_activation, prepare_cluster_draft,
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -147,6 +150,7 @@ fn run() -> Result<(), String> {
     icon_cache.set_waker(icon_wake_tx);
     let (a11y_wake_tx, a11y_wake_rx) = channel();
     let (live_wake_tx, live_wake_rx) = channel();
+    let (action_wake_tx, action_wake_rx) = channel();
     index.set_live_waker(live_wake_tx);
     WaylandSource::new(conn.clone(), event_queue)
         .insert(loop_handle.clone())
@@ -165,6 +169,13 @@ fn run() -> Result<(), String> {
             }
         })
         .map_err(|err| format!("API event source: {err}"))?;
+    loop_handle
+        .insert_source(action_wake_rx, |event, _, app: &mut LiftApp| {
+            if matches!(event, ChannelEvent::Msg(())) {
+                app.poll_activation();
+            }
+        })
+        .map_err(|err| format!("action result source: {err}"))?;
 
     loop_handle
         .insert_source(a11y_wake_rx, |event, _, app: &mut LiftApp| {
@@ -254,6 +265,7 @@ fn run() -> Result<(), String> {
         config,
         font,
         index,
+        activation: activation::ActivationWorker::new(action_wake_tx),
         icon_cache,
         input: ModeInputState {
             mode: initial_mode,
@@ -473,6 +485,7 @@ struct LiftApp {
     config: LiftConfig,
     font: FontRenderer,
     index: ProviderIndex,
+    activation: activation::ActivationWorker,
     icon_cache: IconCache,
     input: ModeInputState,
     results: Vec<LiftResult>,
@@ -873,8 +886,8 @@ impl LiftApp {
             self.toggle_selected();
             return;
         }
-        match activate_result(&self.index, &result) {
-            Ok(()) => self.exit("activate"),
+        match prepare_activation(&self.index, &result) {
+            Ok(action) => self.start_activation(action, "activate"),
             Err(err) => self.status = Some(err),
         }
     }
@@ -889,9 +902,30 @@ impl LiftApp {
             self.status = Some("Select apps or nodes with Space before finalizing".into());
             return;
         }
-        match materialize_cluster_draft(&self.index, &self.draft, query.as_str()) {
-            Ok(()) => self.exit("cluster-draft"),
-            Err(err) => self.status = Some(err),
+        let action = prepare_cluster_draft(&self.index, &self.draft, query.as_str());
+        self.start_activation(action, "cluster-draft");
+    }
+
+    fn start_activation(&mut self, action: Activation, exit_reason: &'static str) {
+        if self.exit {
+            return;
+        }
+        if let Err(error) = self.activation.start(action, exit_reason) {
+            self.status = Some(error);
+            self.mark_redraw();
+        }
+    }
+
+    fn poll_activation(&mut self) {
+        let Some(completion) = self.activation.poll() else {
+            return;
+        };
+        match completion.result {
+            Ok(()) => self.exit(completion.exit_reason),
+            Err(error) => {
+                self.status = Some(error);
+                self.mark_redraw();
+            }
         }
     }
 

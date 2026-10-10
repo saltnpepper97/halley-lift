@@ -21,6 +21,9 @@ rune-cfg = "0.7.1"
 smithay-client-toolkit = "0.20.0"
 wayland-client = "0.31.14"
 
+[dev-dependencies]
+halley-ipc = "0.7.0"
+
 [[bin]]
 name = "halley-lift"
 path = "src/main.rs"

@@ -856,6 +856,7 @@ dependencies = [
  "calloop-wayland-source",
  "freedesktop-icons",
  "halley-api",
+ "halley-ipc",
  "halley-ui",
  "rune-cfg",
  "smithay-client-toolkit",
