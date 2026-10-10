@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep painting at the compositor's granted size on small or scaled outputs,
+  including when a larger dropdown cannot fit.
 - Clip backdrop blur to Lift's painted shape, including rounded corners and
   transparent dropdown gaps, using the optional Wayland background-effect protocol.
 

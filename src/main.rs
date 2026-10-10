@@ -246,6 +246,7 @@ fn run() -> Result<(), String> {
         cursor_last_activity: Instant::now(),
         width,
         height,
+        size_request: SizeRequest { width, height },
         exit: false,
         config,
         font,
@@ -397,6 +398,29 @@ fn sane_dimension(configured: u32, fallback: u32, max: u32) -> u32 {
     }
 }
 
+struct SizeRequest {
+    width: u32,
+    height: u32,
+}
+
+impl SizeRequest {
+    fn update(&mut self, width: u32, height: u32) -> bool {
+        if (width, height) == (self.width, self.height) {
+            return false;
+        }
+        self.width = width;
+        self.height = height;
+        true
+    }
+
+    fn configured_size(&self, size: (u32, u32)) -> (u32, u32) {
+        (
+            sane_dimension(size.0, self.width, 4096),
+            sane_dimension(size.1, self.height, 2160),
+        )
+    }
+}
+
 struct LiftApp {
     accessibility: Option<halley_ui::accessibility::unix::UnixBridge>,
     a11y_wake: calloop::channel::Sender<()>,
@@ -424,6 +448,7 @@ struct LiftApp {
     cursor_last_activity: Instant,
     width: u32,
     height: u32,
+    size_request: SizeRequest,
     exit: bool,
     config: LiftConfig,
     font: FontRenderer,
@@ -671,15 +696,18 @@ impl LiftApp {
         }
         let desired_height = self.desired_surface_height();
         let desired_width = self.config.width.max(420);
-        if desired_width != self.width || desired_height != self.height {
+        // A constrained output may grant less space than requested. Compare
+        // against our last request so that grant does not cause a resize loop.
+        if self.size_request.update(desired_width, desired_height) {
             self.debug(format_args!(
                 "request resize {}x{} -> {}x{}",
                 self.width, self.height, desired_width, desired_height
             ));
             self.layer.set_size(desired_width, desired_height);
-            self.layer.commit();
-            return;
         }
+        // Paint at the current configured size even when requesting a resize:
+        // the compositor need not send another configure if its grant is unchanged.
+        // draw() commits the size request together with the current buffer.
         self.needs_redraw = false;
         self.redraw();
         self.prefetch_live_after_first_draw();
@@ -1107,12 +1135,7 @@ impl LayerShellHandler for LiftApp {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        self.width = sane_dimension(configure.new_size.0, self.config.width.max(420), 4096);
-        self.height = sane_dimension(
-            configure.new_size.1,
-            panel_height(&self.config) as u32,
-            2160,
-        );
+        (self.width, self.height) = self.size_request.configured_size(configure.new_size);
         self.debug(format_args!(
             "configure size={}x{} -> {}x{}",
             configure.new_size.0, configure.new_size.1, self.width, self.height
@@ -1394,6 +1417,57 @@ impl ProvidesRegistryState for LiftApp {
         &mut self.registry_state
     }
     registry_handlers!(OutputState, SeatState);
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::SizeRequest;
+
+    #[test]
+    fn constrained_grants_do_not_repeat_the_same_request() {
+        let mut request = SizeRequest {
+            width: 760,
+            height: 60,
+        };
+        // Even the initial search bar can be wider than the available output.
+        assert_eq!(request.configured_size((640, 60)), (640, 60));
+        assert!(!request.update(760, 60));
+
+        assert!(request.update(760, 800));
+        for _ in 0..3 {
+            assert_eq!(request.configured_size((640, 480)), (640, 480));
+            assert!(!request.update(760, 800));
+        }
+        // Collapsing and reopening still requests the new content size.
+        assert!(request.update(760, 60));
+        assert!(request.update(760, 800));
+    }
+
+    #[test]
+    fn changed_content_can_keep_the_same_constrained_grant() {
+        let mut request = SizeRequest {
+            width: 760,
+            height: 800,
+        };
+        let grant = request.configured_size((640, 480));
+        assert!(request.update(760, 900));
+        // No further configure is needed when both requested heights exceed
+        // the available space; the previous dimensions remain usable to draw.
+        assert_eq!(grant, (640, 480));
+        assert!(!request.update(760, 900));
+    }
+
+    #[test]
+    fn unspecified_configure_dimensions_use_the_latest_request() {
+        let mut request = SizeRequest {
+            width: 760,
+            height: 60,
+        };
+        assert!(request.update(760, 800));
+        assert_eq!(request.configured_size((0, 0)), (760, 800));
+        assert_eq!(request.configured_size((640, 0)), (640, 800));
+        assert_eq!(request.configured_size((0, 480)), (760, 480));
+    }
 }
 
 #[cfg(test)]
