@@ -4,6 +4,7 @@
     clippy::type_complexity
 )]
 
+mod blur;
 mod config;
 mod icons;
 mod mode;
@@ -117,6 +118,7 @@ fn run() -> Result<(), String> {
     let surface = compositor.create_surface(&qh);
     let layer =
         layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(NAMESPACE), None);
+    let blur = blur::BackgroundBlur::bind(&globals, &qh, layer.wl_surface());
     let width = config.width.max(420);
     let height = panel_height(&config) as u32;
     let (anchor, margins) = layer_position(&config);
@@ -228,6 +230,7 @@ fn run() -> Result<(), String> {
         _shm: shm,
         pool,
         layer,
+        blur,
         qh: qh.clone(),
         loop_handle: loop_handle.clone(),
         keyboard: None,
@@ -405,6 +408,7 @@ struct LiftApp {
     _shm: Shm,
     pool: SlotPool,
     layer: LayerSurface,
+    blur: blur::BackgroundBlur,
     qh: QueueHandle<LiftApp>,
     loop_handle: LoopHandle<'static, LiftApp>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -619,6 +623,8 @@ impl LiftApp {
                 cursor_visible: self.cursor_visible,
             },
         )?;
+        self.blur
+            .update(&self._compositor, canvas, self.width, self.height)?;
         if let Some(prepared) = self.font.snapshot.as_ref() {
             if self.accessibility.is_none() {
                 let wake = self.a11y_wake.clone();

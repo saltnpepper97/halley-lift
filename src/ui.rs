@@ -622,6 +622,82 @@ pub fn draw_palette(
 mod tests {
     use super::*;
     use crate::model::{LiftAction, LiftResultKind};
+
+    #[test]
+    fn blur_region_matches_rendered_corners_connected_chrome_and_dropdown_gap() {
+        use crate::blur::alpha_rects;
+
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        // Reuse the renderer across growth/shrink transitions, as the live launcher does.
+        for (query, gap, radius) in [
+            ("", 0, 18),
+            ("editor", 0, 18),
+            ("editor", 18, 18),
+            ("editor", 18, 0),
+            ("editor", 18, 1000),
+            ("", 0, 18),
+        ] {
+            let mut config = LiftConfig::default();
+            config.ui.dropdown_gap = gap;
+            config.rounding.search = radius;
+            config.rounding.panel = radius;
+            config.rounding.dropdown = radius;
+            let mut icons = IconCache::new(&config);
+            let input = ModeInputState {
+                mode: LiftMode::General,
+                query: query.into(),
+            };
+            let draft = ClusterDraft::default();
+            let view = View {
+                config: &config,
+                input: &input,
+                mode: LiftMode::General,
+                results: &[],
+                selected: 0,
+                scroll_offset: 0,
+                draft: &draft,
+                status: None,
+                cursor_visible: true,
+            };
+            let width = config.width;
+            let height = surface_height(view) as u32;
+            let mut pixels = vec![0; (width * height * 4) as usize];
+            draw_palette(&mut pixels, width, height, &mut renderer, &mut icons, view).unwrap();
+            let rects = alpha_rects(&pixels, width, height);
+            let mut covered = vec![false; (width * height) as usize];
+            for rect in &rects {
+                assert!(rect.x >= 0 && rect.y >= 0);
+                assert!(rect.x + rect.width <= width as i32);
+                assert!(rect.y + rect.height <= height as i32);
+                for y in rect.y..rect.y + rect.height {
+                    for x in rect.x..rect.x + rect.width {
+                        let index = (y as u32 * width + x as u32) as usize;
+                        assert!(!covered[index], "overlapping blur rectangles");
+                        covered[index] = true;
+                    }
+                }
+            }
+            for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+                assert_eq!(covered[index], pixel[3] != 0, "pixel {index}");
+            }
+            assert!(covered[(config.ui.search_height as u32 / 2 * width + width / 2) as usize]);
+            if radius > 0 {
+                assert!(!covered[0]);
+                assert!(!covered[width as usize - 1]);
+                assert!(!covered[((height - 1) * width) as usize]);
+                assert!(!covered[(height * width - 1) as usize]);
+            }
+            if !query.is_empty() && gap > 0 {
+                let y = config.ui.search_height as u32 + gap as u32 / 2;
+                assert!(
+                    covered[(y * width) as usize..((y + 1) * width) as usize]
+                        .iter()
+                        .all(|&pixel| !pixel)
+                );
+            }
+        }
+    }
+
     #[test]
     fn native_bgra_alpha_and_taffy_hits_follow_the_visible_rows() {
         let config = LiftConfig {
