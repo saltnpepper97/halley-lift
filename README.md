@@ -231,7 +231,10 @@ lift:
 end
 ```
 
-`max-results` controls how many results Lift computes. `visible-results` controls how many rows are visible at once; keyboard selection scrolls through the full result set.
+`max-results` controls how many results Lift computes. `visible-results` sets the
+maximum number of rows shown at once. When the compositor grants less space,
+Lift shows fewer complete rows; keyboard and wheel navigation scroll through the
+full result set.
 
 App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
 

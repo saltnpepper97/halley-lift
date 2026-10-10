@@ -50,7 +50,7 @@ use smithay_client_toolkit::{
 };
 use ui::{
     FontRenderer, View, contains, draw_palette, panel_height, panel_rect, result_index_at,
-    surface_height,
+    surface_height, visible_results,
 };
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
@@ -583,12 +583,7 @@ impl LiftApp {
         if self.selected >= self.results.len() {
             self.selected = self.results.len().saturating_sub(1);
         }
-        self.scroll_offset = keep_selection_visible(
-            self.selected,
-            self.scroll_offset,
-            self.results.len(),
-            self.config.visible_results,
-        );
+        self.keep_selection_visible();
         perf(format_args!(
             "search mode={:?} query_len={} results={} elapsed={:.2?}",
             mode,
@@ -791,7 +786,7 @@ impl LiftApp {
     }
 
     fn move_page(&mut self, delta: isize) {
-        self.move_selection(delta * self.config.visible_results.max(1) as isize);
+        self.move_selection(delta * self.visible_result_count().max(1) as isize);
     }
 
     fn jump_to_edge(&mut self, end: bool) {
@@ -807,8 +802,20 @@ impl LiftApp {
             self.selected,
             self.scroll_offset,
             self.results.len(),
-            self.config.visible_results,
+            self.visible_result_count(),
         );
+        // A new section heading can reduce capacity after the viewport moves.
+        while self.selected >= self.scroll_offset + self.visible_result_count().max(1) {
+            self.scroll_offset += 1;
+        }
+    }
+
+    fn visible_result_count(&self) -> usize {
+        if self.configured {
+            visible_results(self.current_view(), self.height)
+        } else {
+            self.config.visible_results
+        }
     }
 
     fn scroll_selection(&mut self, direction: isize) {
@@ -816,9 +823,10 @@ impl LiftApp {
             self.selected,
             self.scroll_offset,
             self.results.len(),
-            self.config.visible_results,
+            self.visible_result_count(),
             direction,
         );
+        self.keep_selection_visible();
     }
 
     fn selected_result(&self) -> Option<&LiftResult> {
@@ -1183,6 +1191,7 @@ impl LayerShellHandler for LiftApp {
             configure.new_size.0, configure.new_size.1, self.width, self.height
         ));
         self.configured = true;
+        self.keep_selection_visible();
         self.reset_cursor_blink();
         self.mark_redraw();
     }
