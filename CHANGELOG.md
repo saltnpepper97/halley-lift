@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Clip backdrop blur to Lift's painted shape, including rounded corners and
+  transparent dropdown gaps, using the optional Wayland background-effect protocol.
+
 ## 0.3.0
 
 - Move Lift from the Halley workspace into its own repository and release cycle.

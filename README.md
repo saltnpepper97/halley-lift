@@ -23,6 +23,13 @@ install `base-devel`, `rust`, `wayland`, `fontconfig`, and `libxkbcommon`.
 Halley 0.8 is the intended companion for this version. Older compositor versions
 may not support newer actions such as **Show Halley basics**.
 
+On compositors supporting `ext-background-effect-v1`, Lift sends a blur region
+matching its painted pixels, so blur follows rounded corners and excludes the
+transparent gap between a separated search bar and dropdown. The region updates
+with the buffer when the panel grows or shrinks. Halley's layer rules still
+control whether blur is allowed; compositors without this extension retain their
+existing blur behavior.
+
 Lift is versioned independently of Halley. Its source and releases now live in
 this repository; it is no longer built by Halley's workspace.
 
