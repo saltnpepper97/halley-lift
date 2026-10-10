@@ -41,19 +41,68 @@ fn dropdown_visible(view: View<'_>) -> bool {
         || view.input.mode != LiftMode::General
         || (view.mode == LiftMode::Clusters && view.draft.count() > 0)
 }
+fn dropdown_base_height(view: View<'_>) -> i32 {
+    let ui = &view.config.ui;
+    let mut height =
+        ui.search_height + ui.dropdown_gap + ui.dropdown_padding * 2 + ui.row_gap.max(8);
+    if view.mode == LiftMode::Clusters && view.draft.count() > 0 {
+        height += ui.draft_height + ui.row_gap;
+    }
+    if ui.footer_height > 0 {
+        height += ui.row_gap + ui.footer_height;
+        if view.status.is_some() {
+            height += ui.hint_font_size as i32 + 6;
+        }
+    }
+    height
+}
+
+/// Limit the viewport to complete rows instead of letting Taffy shrink their text.
+pub fn visible_results(view: View<'_>, height: u32) -> usize {
+    let ui = &view.config.ui;
+    let mut used = dropdown_base_height(view);
+    let mut section = "";
+    let mut count = 0;
+    for result in view
+        .results
+        .iter()
+        .skip(view.scroll_offset)
+        .take(view.config.visible_results)
+    {
+        let mut extra = ui.row_height;
+        if count > 0 {
+            extra += ui.row_gap;
+        }
+        if view.config.show_section_labels && section != result.section {
+            extra += ui.section_height;
+        }
+        if i64::from(used + extra) > i64::from(height) {
+            break;
+        }
+        used += extra;
+        section = &result.section;
+        count += 1;
+    }
+    count
+}
+
 pub fn surface_height(view: View<'_>) -> i32 {
     let ui = &view.config.ui;
     if !dropdown_visible(view) {
         return panel_height(view.config);
     }
-    let mut height = ui.search_height + ui.dropdown_gap + ui.dropdown_padding * 2;
-    if view.mode == LiftMode::Clusters && view.draft.count() > 0 {
-        height += ui.draft_height + ui.row_gap;
-    }
+    let mut height = dropdown_base_height(view);
+    // A constrained viewport may scroll farther than the requested viewport.
+    // Keep requesting the full content size when navigating its final rows.
+    let scroll_offset = view.scroll_offset.min(
+        view.results
+            .len()
+            .saturating_sub(view.config.visible_results),
+    );
     let rows: Vec<_> = view
         .results
         .iter()
-        .skip(view.scroll_offset)
+        .skip(scroll_offset)
         .take(view.config.visible_results)
         .collect();
     let mut last = "";
@@ -66,13 +115,7 @@ pub fn surface_height(view: View<'_>) -> i32 {
         }
     }
     let count = rows.len().max(1) as i32;
-    height += count * ui.row_height + (count - 1) * ui.row_gap + ui.row_gap.max(8);
-    if ui.footer_height > 0 {
-        height += ui.row_gap + ui.footer_height;
-        if view.status.is_some() {
-            height += ui.hint_font_size as i32 + 6;
-        }
-    }
+    height += count * ui.row_height + (count - 1) * ui.row_gap;
     height.clamp(panel_height(view.config), 980)
 }
 pub fn panel_rect(_: &LiftConfig, width: u32, height: u32) -> Rect {
@@ -269,6 +312,7 @@ pub fn draw_palette(
 ) -> Result<(), String> {
     let config = view.config;
     let ui = &config.ui;
+    let visible_results = visible_results(view, height);
     let text_color = color(&config.colors.text, Color::rgb8(242, 245, 255));
     let hint = color(&config.colors.hint, Color::rgb8(133, 143, 168));
     let accent = color(&config.colors.accent, Color::rgb8(143, 181, 255));
@@ -344,7 +388,9 @@ pub fn draw_palette(
         .width(width as f32)
         .gap(ui.dropdown_gap as f32)
         .child(search_card);
-    if dropdown_visible(view) {
+    let show_dropdown = dropdown_visible(view)
+        && (visible_results > 0 || view.results.is_empty() || view.draft.count() > 0);
+    if show_dropdown {
         let mut list = Column::new("results").gap(0.0).grow(1.0);
         if view.mode == LiftMode::Clusters && view.draft.count() > 0 {
             let name = if view.input.query.trim().is_empty() {
@@ -374,7 +420,7 @@ pub fn draw_palette(
             .results
             .iter()
             .skip(view.scroll_offset)
-            .take(config.visible_results)
+            .take(visible_results)
             .enumerate()
         {
             let index = view.scroll_offset + visible;
@@ -486,7 +532,7 @@ pub fn draw_palette(
                     .results
                     .len()
                     .saturating_sub(view.scroll_offset)
-                    .min(config.visible_results)
+                    .min(visible_results)
             {
                 list = list.child(Row::new(format!("row-gap-{index}")).height(ui.row_gap as f32));
             }
@@ -598,7 +644,7 @@ pub fn draw_palette(
                 rect.size.width = config.cursor.width.max(1) as f32;
                 style.fill = accent;
             }
-            if dropdown_visible(view) && ui.dropdown_gap == 0 {
+            if show_dropdown && ui.dropdown_gap == 0 {
                 if key.ends_with("/search-chrome") {
                     rect.size.height += style.radius + style.border_width;
                 } else if key.ends_with("/dropdown-chrome") {
@@ -622,6 +668,128 @@ pub fn draw_palette(
 mod tests {
     use super::*;
     use crate::model::{LiftAction, LiftResultKind};
+
+    #[test]
+    fn constrained_viewport_keeps_complete_rows_and_the_scrolled_selection_visible() {
+        let config = LiftConfig {
+            icons: false,
+            ..Default::default()
+        };
+        let input = ModeInputState {
+            query: "editor".into(),
+            ..Default::default()
+        };
+        let results: Vec<_> = (0..12)
+            .map(|index| LiftResult {
+                section: "Apps".into(),
+                title: format!("Editor {index}"),
+                subtitle: Some("Text editor".into()),
+                icon_name: None,
+                kind: LiftResultKind::App,
+                score: 1.0,
+                is_field_pinned: false,
+                shortcut_hint: None,
+                action: LiftAction::ReloadConfig,
+            })
+            .collect();
+        let draft = ClusterDraft::default();
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        let mut icons = IconCache::new(&config);
+        for (height, offset, selected, count) in [
+            (294, 0, 0, 2),
+            (294, 10, 11, 2),
+            (664, 0, 0, 8),
+            (60, 0, 0, 0),
+        ] {
+            let view = View {
+                config: &config,
+                input: &input,
+                mode: LiftMode::General,
+                results: &results,
+                selected,
+                scroll_offset: offset,
+                draft: &draft,
+                status: None,
+                cursor_visible: true,
+            };
+            // Scrolling a short viewport to the end must not request a smaller
+            // surface, shrink the viewport again, and hide the selected row.
+            assert_eq!(surface_height(view), 664);
+            assert_eq!(visible_results(view, height), count);
+            let width = 640;
+            let mut pixels = vec![0; (width * height * 4) as usize];
+            draw_palette(&mut pixels, width, height, &mut renderer, &mut icons, view).unwrap();
+            assert_eq!(renderer.rows.len(), count);
+            for (index, rect, _) in &renderer.rows {
+                assert!(
+                    rect.size.height >= config.ui.row_height as f32 - 0.01,
+                    "{rect:?}"
+                );
+                assert!(rect.origin.y >= config.ui.search_height as f32);
+                assert!(rect.origin.y + rect.size.height <= height as f32);
+                assert_eq!(
+                    result_index_at(
+                        &renderer,
+                        view,
+                        width,
+                        height,
+                        (rect.origin.x + 5.0) as f64,
+                        (rect.origin.y + 5.0) as f64
+                    ),
+                    Some(*index)
+                );
+            }
+            if count > 0 {
+                assert!(renderer.rows.iter().any(|(index, _, _)| *index == selected));
+            }
+        }
+    }
+
+    #[test]
+    fn constrained_row_capacity_reserves_section_headers_and_footer() {
+        let mut config = LiftConfig::default();
+        let input = ModeInputState {
+            query: "editor".into(),
+            ..Default::default()
+        };
+        let mut results = vec![
+            LiftResult {
+                section: "Apps".into(),
+                title: "Editor".into(),
+                subtitle: None,
+                icon_name: None,
+                kind: LiftResultKind::App,
+                score: 1.0,
+                is_field_pinned: false,
+                shortcut_hint: None,
+                action: LiftAction::ReloadConfig,
+            };
+            3
+        ];
+        let draft = ClusterDraft::default();
+        let capacity = |config: &LiftConfig, results: &[LiftResult]| {
+            visible_results(
+                View {
+                    config,
+                    input: &input,
+                    mode: LiftMode::General,
+                    results,
+                    selected: 0,
+                    scroll_offset: 0,
+                    draft: &draft,
+                    status: None,
+                    cursor_visible: true,
+                },
+                244,
+            )
+        };
+        assert_eq!(capacity(&config, &results), 2);
+        results[1].section = "Nodes".into();
+        assert_eq!(capacity(&config, &results), 1);
+        results[1].section = "Apps".into();
+        config.ui.footer_height = 28;
+        assert_eq!(capacity(&config, &results), 1);
+    }
 
     #[test]
     fn blur_region_matches_rendered_corners_connected_chrome_and_dropdown_gap() {

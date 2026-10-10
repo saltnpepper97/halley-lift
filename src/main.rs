@@ -50,12 +50,14 @@ use smithay_client_toolkit::{
 };
 use ui::{
     FontRenderer, View, contains, draw_palette, panel_height, panel_rect, result_index_at,
-    surface_height,
+    surface_height, visible_results,
 };
 use wayland_client::{
-    Connection, QueueHandle,
+    Connection, Dispatch, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    protocol::{
+        wl_callback, wl_display, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
+    },
 };
 
 const NAMESPACE: &str = "halley-lift";
@@ -231,6 +233,7 @@ fn run() -> Result<(), String> {
         pool,
         layer,
         blur,
+        display: conn.display(),
         qh: qh.clone(),
         loop_handle: loop_handle.clone(),
         keyboard: None,
@@ -246,6 +249,7 @@ fn run() -> Result<(), String> {
         cursor_last_activity: Instant::now(),
         width,
         height,
+        size_request: SizeRequest::new(width, height),
         exit: false,
         config,
         font,
@@ -397,6 +401,45 @@ fn sane_dimension(configured: u32, fallback: u32, max: u32) -> u32 {
     }
 }
 
+struct SizeRequest {
+    width: u32,
+    height: u32,
+    pending: bool,
+}
+
+impl SizeRequest {
+    fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            pending: false,
+        }
+    }
+
+    fn update(&mut self, width: u32, height: u32) -> bool {
+        if (width, height) == (self.width, self.height) {
+            return false;
+        }
+        self.width = width;
+        self.height = height;
+        self.pending = true;
+        true
+    }
+
+    fn complete(&mut self) {
+        self.pending = false;
+    }
+
+    fn configured_size(&self, size: (u32, u32)) -> (u32, u32) {
+        (
+            sane_dimension(size.0, self.width, 4096),
+            sane_dimension(size.1, self.height, 2160),
+        )
+    }
+}
+
+struct ResizeSync;
+
 struct LiftApp {
     accessibility: Option<halley_ui::accessibility::unix::UnixBridge>,
     a11y_wake: calloop::channel::Sender<()>,
@@ -409,6 +452,7 @@ struct LiftApp {
     pool: SlotPool,
     layer: LayerSurface,
     blur: blur::BackgroundBlur,
+    display: wl_display::WlDisplay,
     qh: QueueHandle<LiftApp>,
     loop_handle: LoopHandle<'static, LiftApp>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -424,6 +468,7 @@ struct LiftApp {
     cursor_last_activity: Instant,
     width: u32,
     height: u32,
+    size_request: SizeRequest,
     exit: bool,
     config: LiftConfig,
     font: FontRenderer,
@@ -538,12 +583,7 @@ impl LiftApp {
         if self.selected >= self.results.len() {
             self.selected = self.results.len().saturating_sub(1);
         }
-        self.scroll_offset = keep_selection_visible(
-            self.selected,
-            self.scroll_offset,
-            self.results.len(),
-            self.config.visible_results,
-        );
+        self.keep_selection_visible();
         perf(format_args!(
             "search mode={:?} query_len={} results={} elapsed={:.2?}",
             mode,
@@ -666,18 +706,29 @@ impl LiftApp {
     }
 
     fn flush_redraw(&mut self) {
-        if self.exit || !self.configured || !self.needs_redraw || self.frame_pending {
+        if self.exit
+            || !self.configured
+            || !self.needs_redraw
+            || self.frame_pending
+            || self.size_request.pending
+        {
             return;
         }
         let desired_height = self.desired_surface_height();
         let desired_width = self.config.width.max(420);
-        if desired_width != self.width || desired_height != self.height {
+        // A constrained output may grant less space than requested. Compare
+        // against our last request so that grant does not cause a resize loop.
+        if self.size_request.update(desired_width, desired_height) {
             self.debug(format_args!(
                 "request resize {}x{} -> {}x{}",
                 self.width, self.height, desired_width, desired_height
             ));
             self.layer.set_size(desired_width, desired_height);
             self.layer.commit();
+            // Wait until the compositor has processed the request before painting
+            // new content. A sync callback also arrives when a constrained grant
+            // stays unchanged and the compositor sends no configure event.
+            let _ = self.display.sync(&self.qh, ResizeSync);
             return;
         }
         self.needs_redraw = false;
@@ -735,7 +786,7 @@ impl LiftApp {
     }
 
     fn move_page(&mut self, delta: isize) {
-        self.move_selection(delta * self.config.visible_results.max(1) as isize);
+        self.move_selection(delta * self.visible_result_count().max(1) as isize);
     }
 
     fn jump_to_edge(&mut self, end: bool) {
@@ -751,8 +802,20 @@ impl LiftApp {
             self.selected,
             self.scroll_offset,
             self.results.len(),
-            self.config.visible_results,
+            self.visible_result_count(),
         );
+        // A new section heading can reduce capacity after the viewport moves.
+        while self.selected >= self.scroll_offset + self.visible_result_count().max(1) {
+            self.scroll_offset += 1;
+        }
+    }
+
+    fn visible_result_count(&self) -> usize {
+        if self.configured {
+            visible_results(self.current_view(), self.height)
+        } else {
+            self.config.visible_results
+        }
     }
 
     fn scroll_selection(&mut self, direction: isize) {
@@ -760,9 +823,10 @@ impl LiftApp {
             self.selected,
             self.scroll_offset,
             self.results.len(),
-            self.config.visible_results,
+            self.visible_result_count(),
             direction,
         );
+        self.keep_selection_visible();
     }
 
     fn selected_result(&self) -> Option<&LiftResult> {
@@ -1095,6 +1159,20 @@ impl OutputHandler for LiftApp {
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
 
+impl Dispatch<wl_callback::WlCallback, ResizeSync> for LiftApp {
+    fn event(
+        app: &mut Self,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        _: &ResizeSync,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        app.size_request.complete();
+        app.mark_redraw();
+    }
+}
+
 impl LayerShellHandler for LiftApp {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
         self.exit("layer-closed");
@@ -1107,17 +1185,13 @@ impl LayerShellHandler for LiftApp {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        self.width = sane_dimension(configure.new_size.0, self.config.width.max(420), 4096);
-        self.height = sane_dimension(
-            configure.new_size.1,
-            panel_height(&self.config) as u32,
-            2160,
-        );
+        (self.width, self.height) = self.size_request.configured_size(configure.new_size);
         self.debug(format_args!(
             "configure size={}x{} -> {}x{}",
             configure.new_size.0, configure.new_size.1, self.width, self.height
         ));
         self.configured = true;
+        self.keep_selection_visible();
         self.reset_cursor_blink();
         self.mark_redraw();
     }
@@ -1394,6 +1468,70 @@ impl ProvidesRegistryState for LiftApp {
         &mut self.registry_state
     }
     registry_handlers!(OutputState, SeatState);
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::SizeRequest;
+
+    #[test]
+    fn constrained_grants_do_not_repeat_the_same_request() {
+        let mut request = SizeRequest::new(760, 60);
+        // Even the initial search bar can be wider than the available output.
+        assert_eq!(request.configured_size((640, 60)), (640, 60));
+        assert!(!request.update(760, 60));
+
+        assert!(request.update(760, 800));
+        assert!(request.pending);
+        assert_eq!(request.configured_size((640, 480)), (640, 480));
+        request.complete();
+        assert!(!request.pending);
+        for _ in 0..3 {
+            assert_eq!(request.configured_size((640, 480)), (640, 480));
+            assert!(!request.update(760, 800));
+        }
+        // Collapsing and reopening still requests the new content size.
+        assert!(request.update(760, 60));
+        request.complete();
+        assert!(request.update(760, 800));
+    }
+
+    #[test]
+    fn changed_content_can_keep_the_same_constrained_grant() {
+        let mut request = SizeRequest::new(760, 800);
+        let grant = request.configured_size((640, 480));
+        assert!(request.update(760, 900));
+        assert!(request.pending);
+        // No further configure is needed when both requested heights exceed
+        // the available space. Completing the sync unblocks drawing anyway.
+        request.complete();
+        assert!(!request.pending);
+        assert_eq!(grant, (640, 480));
+        assert!(!request.update(760, 900));
+    }
+
+    #[test]
+    fn unspecified_configure_dimensions_use_the_latest_request() {
+        let mut request = SizeRequest::new(760, 60);
+        assert!(request.update(760, 800));
+        assert_eq!(request.configured_size((0, 0)), (760, 800));
+        assert_eq!(request.configured_size((640, 0)), (640, 800));
+        assert_eq!(request.configured_size((0, 480)), (760, 480));
+    }
+
+    #[test]
+    fn resized_content_waits_until_the_request_has_been_processed() {
+        let mut request = SizeRequest::new(760, 60);
+        assert!(!request.pending);
+        assert!(request.update(760, 664));
+        assert!(request.pending);
+        assert_eq!(request.configured_size((760, 664)), (760, 664));
+        // Even a configure must not release the redraw before the sync callback.
+        assert!(request.pending);
+        request.complete();
+        assert!(!request.pending);
+        assert!(!request.update(760, 664));
+    }
 }
 
 #[cfg(test)]
