@@ -948,6 +948,198 @@ fn shell_quote(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod api_tests {
+    use super::*;
+    use halley_ipc::{
+        ControlRequest, HALLEY_API_VERSION, HALLEY_IPC_VERSION, Request, Response, ServerInfo,
+        decode_request, encode_response, read_frame_with_fds, write_frame_with_fds,
+    };
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    struct SocketFixture(PathBuf);
+
+    impl SocketFixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "lift-api-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::create_dir(path.join("halley")).unwrap();
+            Self(path)
+        }
+
+        fn socket(&self) -> PathBuf {
+            self.0.join("halley/halley.sock")
+        }
+    }
+
+    impl Drop for SocketFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn request(stream: &UnixStream) -> Request {
+        let (bytes, fds) = read_frame_with_fds(stream, 0).unwrap();
+        assert!(fds.is_empty());
+        decode_request(&bytes).unwrap()
+    }
+
+    fn reply(stream: &UnixStream, response: Response) {
+        write_frame_with_fds(stream, &encode_response(&response).unwrap(), &[]).unwrap();
+    }
+
+    fn run_in_private_runtime(test: &str) -> bool {
+        const MARKER: &str = "HALLEY_LIFT_TEST_API_RUNTIME";
+        if std::env::var_os(MARKER).is_some() {
+            return false;
+        }
+        // The SDK resolves its default path even with an explicit socket path.
+        // Keep that environment requirement local to this test's child process.
+        let fixture = SocketFixture::new();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(MARKER, "1")
+            .env("XDG_RUNTIME_DIR", &fixture.0)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "{test} failed");
+                return true;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("{test} did not finish");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn fake_action(stall_hello: bool, stall_action: bool) {
+        let fixture = SocketFixture::new();
+        let listener = UnixListener::bind(fixture.socket()).unwrap();
+        let (release, blocked) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            assert!(matches!(request(&stream), Request::Hello(_)));
+            if stall_hello {
+                let _ = blocked.recv_timeout(Duration::from_secs(6));
+                return;
+            }
+            reply(
+                &stream,
+                Response::Hello(ServerInfo {
+                    compositor_version: "test".into(),
+                    api_version: HALLEY_API_VERSION,
+                    ipc_protocol: HALLEY_IPC_VERSION,
+                    capabilities: Vec::new(),
+                }),
+            );
+            assert!(matches!(
+                request(&stream),
+                Request::Control(ControlRequest::ShowBasics)
+            ));
+            if stall_action {
+                let _ = blocked.recv_timeout(Duration::from_secs(6));
+            } else {
+                reply(&stream, Response::Ack);
+            }
+        });
+        let mut options = api_options();
+        options.socket_path = Some(fixture.socket());
+        let started = Instant::now();
+        let result = Activation::Compositor(LiftAction::ShowBasics).execute_with_options(options);
+        let elapsed = started.elapsed();
+        let _ = release.send(());
+        server.join().unwrap();
+        if stall_hello || stall_action {
+            assert!(result.is_err(), "stalled peer should fail");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "timeout was not applied: {elapsed:?}"
+            );
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
+
+    #[test]
+    fn stalled_handshake_times_out() {
+        if run_in_private_runtime("providers::api_tests::stalled_handshake_times_out") {
+            return;
+        }
+        fake_action(true, false);
+    }
+
+    #[test]
+    fn stalled_action_reply_times_out() {
+        if run_in_private_runtime("providers::api_tests::stalled_action_reply_times_out") {
+            return;
+        }
+        fake_action(false, true);
+    }
+
+    #[test]
+    fn acknowledged_action_succeeds() {
+        if run_in_private_runtime("providers::api_tests::acknowledged_action_succeeds") {
+            return;
+        }
+        fake_action(false, false);
+    }
+
+    #[test]
+    fn startup_index_does_not_wait_for_api() {
+        const MARKER: &str = "HALLEY_LIFT_TEST_STARTUP_INDEX";
+        if std::env::var_os(MARKER).is_some() {
+            ProviderIndex::load(&LiftConfig::default());
+            return;
+        }
+        // Use a child so its runtime directory cannot race other tests' env.
+        let fixture = SocketFixture::new();
+        let listener = UnixListener::bind(fixture.socket()).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "providers::api_tests::startup_index_does_not_wait_for_api",
+            ])
+            .env(MARKER, "1")
+            .env("XDG_RUNTIME_DIR", &fixture.0)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("startup waited on a stalled API");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

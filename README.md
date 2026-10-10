@@ -45,6 +45,11 @@ You can also seed an initial query:
 halley-lift cluster release
 ```
 
+Lift opens without waiting for the compositor API. Action requests run in the
+background with two-second socket read/write timeouts, keeping search and Escape
+responsive if the API stops replying. Repeated activation is ignored while an
+action is pending; successful activation closes Lift as usual.
+
 ## Launching From Halley
 
 A freshly generated Halley config binds `Mod+D` to `halley-lift`, so Lift is the
