@@ -38,7 +38,7 @@ lift:
     dropdown-border "#2b3248cc"
     search "#090b12d8"
     row-selected "#2e4575ea"
-    divider "#2b324899"
+    divider "#2b324899" # 1px connected-panel separator; #00000000 hides it.
     text "#f2f5ff"
     subtext "#9ea7bf"
     hint "#858fa8"
