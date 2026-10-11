@@ -290,6 +290,11 @@ maximum number of rows shown at once. When the compositor grants less space,
 Lift shows fewer complete rows; keyboard and wheel navigation scroll through the
 full result set.
 
+`colors.divider` controls the 1px line between the search box and its connected
+dropdown, including "No results" and action errors. Set it to `"#00000000"` to
+hide the line. A positive `ui.dropdown-gap` separates the panels and omits the
+divider.
+
 App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
 
 App discovery searches `XDG_DATA_HOME/applications` first, falling back to

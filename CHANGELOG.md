@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore the 1px separator between connected search and dropdown chrome,
+  including "No results" and action errors. Honor the existing `colors.divider`
+  setting; a fully transparent color hides the line.
 - Use matching 12px search, panel, and dropdown corner radii in the built-in
   defaults, first-run configuration, and examples, so expanded results and
   "No results" have the same outer rounding at the top and bottom.
