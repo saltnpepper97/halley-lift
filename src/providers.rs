@@ -1965,4 +1965,240 @@ exec '\''/bin/zsh'\'' -i'"#
             ["terminal with spaces", "--title", "a b", "-e", "/bin/sh"]
         );
     }
+
+    fn discovery_entry(dir: &Path, relative: &str, name: &str, marker: &str) -> PathBuf {
+        let path = dir.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/echo {marker} %k\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn desktop_directory_defaults_handle_unset_empty_and_relative_values() {
+        use std::ffi::OsStr;
+        let expected = vec![
+            PathBuf::from("/home/test/.local/share/applications"),
+            PathBuf::from("/usr/local/share/applications"),
+            PathBuf::from("/usr/share/applications"),
+        ];
+        for data_home in [None, Some(OsStr::new("")), Some(OsStr::new("relative"))] {
+            for data_dirs in [None, Some(OsStr::new(""))] {
+                assert_eq!(
+                    desktop_dirs_from(Some(OsStr::new("/home/test")), data_home, data_dirs),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn custom_user_data_precedes_system_directories_without_cwd_or_duplicates() {
+        use std::ffi::OsStr;
+        let dirs = desktop_dirs_from(
+            Some(OsStr::new("/home/test")),
+            Some(OsStr::new("/custom")),
+            Some(OsStr::new(
+                "/system-first:relative::/system-second:/custom:/system-first",
+            )),
+        );
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/custom/applications"),
+                PathBuf::from("/system-first/applications"),
+                PathBuf::from("/system-second/applications")
+            ]
+        );
+        let fixture = FileFixture::new();
+        let custom = fixture.0.join("custom-data");
+        let system = fixture.0.join("system-data");
+        discovery_entry(
+            &custom.join("applications"),
+            "custom.desktop",
+            "Custom App",
+            "custom",
+        );
+        let dirs = desktop_dirs_from(
+            Some(OsStr::new("/unused/home")),
+            Some(custom.as_os_str()),
+            Some(system.as_os_str()),
+        );
+        let apps = load_desktop_apps_from(&dirs);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].id, "custom");
+        assert_eq!(apps[0].exec[1], "custom");
+    }
+
+    #[test]
+    fn absent_or_relative_home_does_not_add_a_relative_application_directory() {
+        use std::ffi::OsStr;
+        for home in [None, Some(OsStr::new("relative-home"))] {
+            assert_eq!(
+                desktop_dirs_from(home, None, Some(OsStr::new("/system"))),
+                [PathBuf::from("/system/applications")]
+            );
+            assert_eq!(
+                desktop_dirs_from(
+                    home,
+                    Some(OsStr::new("/custom")),
+                    Some(OsStr::new("/system"))
+                ),
+                [
+                    PathBuf::from("/custom/applications"),
+                    PathBuf::from("/system/applications")
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_and_excluded_user_entries_mask_every_lower_priority_copy() {
+        let fixture = FileFixture::new();
+        let user = fixture.0.join("user");
+        let first = fixture.0.join("first");
+        let second = fixture.0.join("second");
+        fs::create_dir(&user).unwrap();
+        discovery_entry(&first, "masked.desktop", "First", "first");
+        discovery_entry(&second, "masked.desktop", "Second", "second");
+        let dirs = [user.clone(), first, second];
+        for text in [
+            "[Desktop Entry]\nHidden=true\n",
+            "[Desktop Entry]\nNoDisplay=true\n",
+            "[Desktop Entry]\nName=Invalid User Command\nExec=app %x\n",
+        ] {
+            fs::write(user.join("masked.desktop"), text).unwrap();
+            assert!(
+                load_desktop_apps_from(&dirs).is_empty(),
+                "system copy resurfaced for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn visible_overrides_follow_directory_order_and_preserve_selected_commands() {
+        let fixture = FileFixture::new();
+        let user = fixture.0.join("user");
+        let first = fixture.0.join("first");
+        let second = fixture.0.join("second");
+        let selected = discovery_entry(&user, "override.desktop", "User", "user");
+        discovery_entry(&first, "override.desktop", "First", "first");
+        discovery_entry(&second, "override.desktop", "Second", "second");
+        discovery_entry(&first, "system.desktop", "Preferred System", "preferred");
+        discovery_entry(&second, "system.desktop", "Lower System", "lower");
+        let apps = load_desktop_apps_from(&[user, first, second]);
+        assert_eq!(apps.len(), 2);
+        let selected_app = apps.iter().find(|app| app.id == "override").unwrap();
+        assert_eq!(selected_app.name, "User");
+        assert_eq!(
+            selected_app.exec,
+            [
+                "/bin/echo".to_string(),
+                "user".into(),
+                selected.to_string_lossy().into_owned()
+            ]
+        );
+        assert_eq!(
+            apps.iter().find(|app| app.id == "system").unwrap().exec[1],
+            "preferred"
+        );
+    }
+
+    #[test]
+    fn nested_basename_matches_remain_distinct_through_activation_and_cluster_staging() {
+        let fixture = FileFixture::new();
+        let dir = fixture.0.join("applications");
+        for (relative, name, marker) in [
+            ("shared.desktop", "Shared Top", "top"),
+            ("left/shared.desktop", "Shared Left", "left"),
+            ("right/shared.desktop", "Shared Right", "right"),
+        ] {
+            discovery_entry(&dir, relative, name, marker);
+        }
+        let index = ProviderIndex {
+            apps: load_desktop_apps_from(&[dir]),
+            ..Default::default()
+        };
+        let results = index.search(&SearchContext {
+            mode: LiftMode::Apps,
+            query: "shared".into(),
+            query_lower: "shared".into(),
+            max_results: 10,
+            draft_count: 0,
+        });
+        assert_eq!(results.len(), 3);
+        for (id, marker) in [
+            ("shared", "top"),
+            ("left-shared", "left"),
+            ("right-shared", "right"),
+        ] {
+            let result = results.iter().find(|result| matches!(&result.action, LiftAction::LaunchApp { app_id } if app_id == id)).unwrap();
+            let Activation::LaunchApp(args) = prepare_activation(&index, result).unwrap() else {
+                panic!("not an app launch")
+            };
+            assert_eq!(args[1], marker);
+        }
+        let draft = ClusterDraft {
+            app_ids: vec!["left-shared".into(), "right-shared".into()],
+            running_node_ids: vec![],
+        };
+        let request = build_cluster_draft_request(&index, &draft).unwrap();
+        assert_eq!(request.apps.len(), 2);
+        for (launch, marker) in request.apps.iter().zip(["left", "right"]) {
+            assert_eq!(launch.app_id, format!("{marker}-shared"));
+            assert_eq!(shlex::split(&launch.command).unwrap()[1], marker);
+        }
+    }
+
+    #[test]
+    fn deep_directories_and_symlink_aliases_load_without_directory_cycle_recursion() {
+        use std::os::unix::fs::symlink;
+        let fixture = FileFixture::new();
+        let dir = fixture.0.join("applications");
+        discovery_entry(&dir, "one/two/three/four/five/deep.desktop", "Deep", "deep");
+        let linked = discovery_entry(&dir, "target/probe.desktop", "Linked", "linked");
+        symlink(dir.join("target"), dir.join("alias")).unwrap();
+        symlink(&dir, dir.join("target/back-to-root")).unwrap();
+        symlink(&linked, dir.join("linked.desktop")).unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(load_desktop_apps_from(&[dir]));
+        });
+        let apps = receive
+            .recv_timeout(Duration::from_secs(3))
+            .expect("directory cycle stalled discovery");
+        let ids = apps.into_iter().map(|app| app.id).collect::<HashSet<_>>();
+        assert_eq!(
+            ids,
+            [
+                "one-two-three-four-five-deep",
+                "target-probe",
+                "alias-probe",
+                "linked"
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect()
+        );
+    }
+
+    #[test]
+    fn unreadable_entries_and_broken_file_links_do_not_claim_system_ids() {
+        use std::os::unix::fs::symlink;
+        let fixture = FileFixture::new();
+        let user = fixture.0.join("user");
+        let system = fixture.0.join("system");
+        fs::create_dir(&user).unwrap();
+        fs::write(user.join("unreadable.desktop"), [0xff]).unwrap();
+        symlink(user.join("missing"), user.join("broken.desktop")).unwrap();
+        for name in ["unreadable", "broken"] {
+            discovery_entry(&system, &format!("{name}.desktop"), name, "system");
+        }
+        let apps = load_desktop_apps_from(&[user, system, fixture.0.join("missing-directory")]);
+        assert_eq!(apps.len(), 2);
+        assert!(apps.iter().all(|app| app.exec[1] == "system"));
+    }
 }
