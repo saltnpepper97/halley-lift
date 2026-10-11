@@ -4,7 +4,7 @@ use halley_ui::ui::{Align, CardStyle, PaintItem, PreparedView};
 use crate::config::LiftConfig;
 use crate::icons::IconCache;
 use crate::mode::{LiftMode, ModeInputState};
-use crate::model::{ClusterDraft, LiftResult};
+use crate::model::{ClusterDraft, LiftAction, LiftResult};
 use halley_ui::input::{InputEvent, Key, Modifiers};
 use halley_ui::software::{PixelFormat, Surface};
 use halley_ui::{
@@ -154,11 +154,23 @@ pub fn result_index_at(
     x: f64,
     y: f64,
 ) -> Option<usize> {
-    renderer.rows.iter().find_map(|(i, rect, title)| {
+    renderer.rows.iter().find_map(|(i, rect, identity)| {
         (rect.contains(Point::new(x as f32, y as f32))
-            && view.results.get(*i).is_some_and(|r| r.title == *title))
+            && view.results.get(*i).is_some_and(|r| identity.matches(r)))
         .then_some(*i)
     })
+}
+
+#[derive(Clone)]
+struct ResultIdentity {
+    title: String,
+    action: LiftAction,
+}
+
+impl ResultIdentity {
+    fn matches(&self, result: &LiftResult) -> bool {
+        self.title == result.title && self.action == result.action
+    }
 }
 fn transparent() -> Color {
     Color::rgba(0.0, 0.0, 0.0, 0.0)
@@ -196,11 +208,18 @@ pub struct FontRenderer {
     text: TextSystem,
     view: UiView,
     theme: Theme,
-    rows: Vec<(usize, UiRect, String)>,
+    rows: Vec<(usize, UiRect, ResultIdentity)>,
     pub snapshot: Option<PreparedView>,
     tints: HashMap<(u64, [u8; 4]), Arc<ImageData>>,
 }
 impl FontRenderer {
+    /// Activations from the retained view must still identify the painted target.
+    pub fn result_is_current(&self, index: usize, results: &[LiftResult]) -> bool {
+        self.rows.iter().any(|(i, _, identity)| {
+            *i == index && results.get(index).is_some_and(|r| identity.matches(r))
+        })
+    }
+
     pub fn new(family: &str) -> Result<Self, String> {
         let theme = Theme {
             font: Font {
@@ -642,7 +661,10 @@ pub fn draw_palette(
             renderer.rows.push((
                 index,
                 rect.intersection(prepared.bounds),
-                result.title.clone(),
+                ResultIdentity {
+                    title: result.title.clone(),
+                    action: result.action.clone(),
+                },
             ));
         }
     }
@@ -688,6 +710,243 @@ pub fn draw_palette(
 mod tests {
     use super::*;
     use crate::model::{LiftAction, LiftResultKind};
+
+    #[test]
+    fn stale_same_title_hits_reject_changed_targets_until_repaint() {
+        let config = LiftConfig {
+            icons: false,
+            ..Default::default()
+        };
+        let input = ModeInputState {
+            mode: LiftMode::Nodes,
+            query: "Editor".into(),
+        };
+        let draft = ClusterDraft::default();
+        let results = vec![LiftResult {
+            action: LiftAction::FocusNode { id: 13 },
+            ..error_test_results().remove(0)
+        }];
+        let view = View {
+            config: &config,
+            input: &input,
+            mode: LiftMode::Nodes,
+            results: &results,
+            selected: 0,
+            scroll_offset: 0,
+            draft: &draft,
+            status: None,
+            cursor_visible: true,
+        };
+        let height = surface_height(view) as u32;
+        let mut pixels = vec![0; (config.width * height * 4) as usize];
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        let mut icons = IconCache::new(&config);
+        let replacements = [
+            (
+                LiftAction::FocusNode { id: 13 },
+                LiftAction::FocusNode { id: 14 },
+            ),
+            (
+                LiftAction::OpenCluster { id: 13 },
+                LiftAction::OpenCluster { id: 14 },
+            ),
+            (
+                LiftAction::LaunchApp {
+                    app_id: "editor-one".into(),
+                },
+                LiftAction::LaunchApp {
+                    app_id: "editor-two".into(),
+                },
+            ),
+            (
+                LiftAction::OpenConfig {
+                    path: "/first/config".into(),
+                },
+                LiftAction::OpenConfig {
+                    path: "/second/config".into(),
+                },
+            ),
+            (
+                LiftAction::RunInTerminal {
+                    command: "first command".into(),
+                },
+                LiftAction::RunInTerminal {
+                    command: "second command".into(),
+                },
+            ),
+            (LiftAction::ReloadConfig, LiftAction::ShowBasics),
+            (LiftAction::CreateCluster, LiftAction::ReloadConfig),
+            (
+                LiftAction::FocusNode { id: 13 },
+                LiftAction::OpenCluster { id: 13 },
+            ),
+        ];
+        for (painted_action, action) in replacements {
+            let results = vec![LiftResult {
+                action: painted_action,
+                ..results[0].clone()
+            }];
+            let view = View {
+                results: &results,
+                ..view
+            };
+            draw_palette(
+                &mut pixels,
+                config.width,
+                height,
+                &mut renderer,
+                &mut icons,
+                view,
+            )
+            .unwrap();
+            let rect = renderer.rows[0].1;
+            let x = f64::from(rect.origin.x + 5.0);
+            let y = f64::from(rect.origin.y + 5.0);
+            assert_eq!(
+                result_index_at(&renderer, view, config.width, height, x, y),
+                Some(0)
+            );
+            assert!(renderer.result_is_current(0, &results));
+            assert!(!renderer.result_is_current(1, &results));
+            let mut retitled = results.clone();
+            retitled[0].title = "Renamed Editor".into();
+            assert!(!renderer.result_is_current(0, &retitled));
+            let changed = vec![LiftResult {
+                action,
+                ..results[0].clone()
+            }];
+            let changed_view = View {
+                results: &changed,
+                ..view
+            };
+            assert_eq!(
+                result_index_at(&renderer, changed_view, config.width, height, x, y),
+                None,
+                "cached row accepted a different target with the same title"
+            );
+            assert!(!renderer.result_is_current(0, &changed));
+            draw_palette(
+                &mut pixels,
+                config.width,
+                height,
+                &mut renderer,
+                &mut icons,
+                changed_view,
+            )
+            .unwrap();
+            assert_eq!(
+                result_index_at(&renderer, changed_view, config.width, height, x, y),
+                Some(0)
+            );
+            assert!(renderer.result_is_current(0, &changed));
+        }
+    }
+
+    #[test]
+    fn same_title_reordering_and_removal_do_not_retarget_cached_rows() {
+        let config = LiftConfig {
+            icons: false,
+            ..Default::default()
+        };
+        let input = ModeInputState {
+            mode: LiftMode::Nodes,
+            query: "Editor".into(),
+        };
+        let draft = ClusterDraft::default();
+        let results: Vec<_> = [13, 14]
+            .into_iter()
+            .map(|id| LiftResult {
+                action: LiftAction::FocusNode { id },
+                ..error_test_results().remove(0)
+            })
+            .collect();
+        let view = View {
+            config: &config,
+            input: &input,
+            mode: LiftMode::Nodes,
+            results: &results,
+            selected: 0,
+            scroll_offset: 0,
+            draft: &draft,
+            status: None,
+            cursor_visible: true,
+        };
+        let height = surface_height(view) as u32;
+        let mut pixels = vec![0; (config.width * height * 4) as usize];
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        let mut icons = IconCache::new(&config);
+        draw_palette(
+            &mut pixels,
+            config.width,
+            height,
+            &mut renderer,
+            &mut icons,
+            view,
+        )
+        .unwrap();
+        let points: Vec<_> = renderer
+            .rows
+            .iter()
+            .map(|(_, rect, _)| {
+                (
+                    f64::from(rect.origin.x + 5.0),
+                    f64::from(rect.origin.y + 5.0),
+                )
+            })
+            .collect();
+        let reordered = vec![results[1].clone(), results[0].clone()];
+        let changed_view = View {
+            results: &reordered,
+            ..view
+        };
+        for &(x, y) in &points {
+            assert_eq!(
+                result_index_at(&renderer, changed_view, config.width, height, x, y),
+                None
+            );
+        }
+        let removed_view = View {
+            results: &results[1..],
+            ..view
+        };
+        for &(x, y) in &points {
+            assert_eq!(
+                result_index_at(&renderer, removed_view, config.width, height, x, y),
+                None
+            );
+        }
+        draw_palette(
+            &mut pixels,
+            config.width,
+            height,
+            &mut renderer,
+            &mut icons,
+            removed_view,
+        )
+        .unwrap();
+        assert_eq!(
+            result_index_at(
+                &renderer,
+                removed_view,
+                config.width,
+                height,
+                points[0].0,
+                points[0].1
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            result_index_at(
+                &renderer,
+                removed_view,
+                config.width,
+                height,
+                points[1].0,
+                points[1].1
+            ),
+            None
+        );
+    }
 
     fn error_test_results() -> Vec<LiftResult> {
         vec![

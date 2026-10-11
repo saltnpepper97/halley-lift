@@ -199,7 +199,7 @@ fn run() -> Result<(), String> {
                                     .0
                                     .strip_prefix("open-")
                                     .and_then(|n| n.parse::<usize>().ok())
-                                    && index < app.results.len()
+                                    && app.font.result_is_current(index, &app.results)
                                 {
                                     app.selected = index;
                                     app.activate_selected();
