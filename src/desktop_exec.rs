@@ -173,3 +173,107 @@ pub fn shell_command(args: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(value: &str) -> Result<Vec<String>, String> {
+        parse(
+            value,
+            "Éditor's $HOME %k",
+            Some("test icon"),
+            Path::new("/apps/test file.desktop"),
+        )
+    }
+
+    #[test]
+    fn quoted_paths_spaces_and_empty_arguments_survive() {
+        assert_eq!(
+            command(r#""/apps/test program" "two  spaces" "" plain"#).unwrap(),
+            ["/apps/test program", "two  spaces", "", "plain"]
+        );
+    }
+
+    #[test]
+    fn string_escapes_are_decoded_once_before_quote_escapes() {
+        let raw = r#"app "line\nnext\tcolumn\rend\sspace" "literal \\\\n" "slash \\\\" "quote \\"" "\\$HOME" "\\`cmd\\`""#;
+        assert_eq!(
+            command(raw).unwrap(),
+            [
+                "app",
+                "line\nnext\tcolumn\rend space",
+                r"literal \n",
+                r"slash \",
+                "quote \"",
+                "$HOME",
+                "`cmd`"
+            ]
+        );
+        assert_eq!(unescape(r"one\\ntwo\nthree"), "one\\ntwo\nthree");
+    }
+
+    #[test]
+    fn fields_expand_once_without_splitting_or_evaluating_values() {
+        assert_eq!(
+            command("app %c --name=%c %k %i %% percent%%tail").unwrap(),
+            [
+                "app",
+                "Éditor's $HOME %k",
+                "--name=Éditor's $HOME %k",
+                "/apps/test file.desktop",
+                "--icon",
+                "test icon",
+                "%",
+                "percent%tail"
+            ]
+        );
+        assert_eq!(
+            parse("app %i", "App", None, Path::new("test.desktop")).unwrap(),
+            ["app"]
+        );
+        assert_eq!(
+            parse("app %i", "App", Some(""), Path::new("test.desktop")).unwrap(),
+            ["app"]
+        );
+    }
+
+    #[test]
+    fn unused_file_fields_and_deprecated_fields_are_removed() {
+        for code in ['f', 'F', 'u', 'U'] {
+            assert_eq!(
+                command(&format!("app %{code} %d %D %n %N %v %m end")).unwrap(),
+                ["app", "end"]
+            );
+        }
+        assert_eq!(
+            command("app --file=%f end").unwrap(),
+            ["app", "--file=", "end"]
+        );
+    }
+
+    #[test]
+    fn invalid_commands_are_rejected_instead_of_partially_launched() {
+        for value in [
+            "",
+            "\"\"",
+            "VAR=value app",
+            "app %x",
+            "app %",
+            "app %f %u",
+            "app --files=%F",
+            "app --icon=%i",
+            "app \"%c\"",
+            "app \"unclosed",
+            "app partial\"quote\"",
+            "app \"closed\"suffix",
+            "app 'single quoted'",
+            "app unquoted;command",
+            "app \"bad\\q\"",
+            "app \"nul\0\"",
+            "%f app",
+        ] {
+            assert!(command(value).is_err(), "accepted {value:?}");
+        }
+    }
+}
