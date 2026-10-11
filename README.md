@@ -290,7 +290,23 @@ full result set.
 
 App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
 
-`terminal` is prepended to `.desktop` apps with `Terminal=true`, so terminal apps such as `micro` or `nvim` open in the configured terminal.
+Desktop app `Exec` values are parsed into arguments using the
+[Desktop Entry rules](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html).
+Double quotes preserve spaces and empty arguments; string and quoting escapes
+are decoded before `%c` (the displayed app name), `%k` (the desktop-file path),
+`%i` (`--icon` and the entry's icon), and `%%` (a literal percent) are expanded.
+File/URL fields are omitted because Lift launches apps without a file selection.
+Malformed commands and unknown field codes are excluded from app results.
+
+Apps launch as an executable and argument list. Missing or inaccessible
+executables leave Lift open with an error. This reports spawn failures; it does
+not monitor applications for errors after they start. Cluster drafts pass the
+same arguments to Halley as a safely quoted shell command.
+
+For `.desktop` apps with `Terminal=true`, `terminal` supplies the executable and
+its arguments, with shell-style quoting supported in this prefix. For example,
+`kitty -e` opens terminal apps such as `micro` or `nvim` in Kitty. The `term`
+search mode continues to run typed commands through your interactive shell.
 
 Mouse support includes hover selection, row click activation, and wheel navigation inside the Lift panel. Typing gives selection authority to the keyboard and resets the highlight to the first result even when the pointer is resting over another row; real pointer motion returns authority to hover selection. Empty general search shows only the rounded search bar; typing or entering a mode prefix expands a connected results body below it. Keyboard navigation supports held direction keys, Left/Right, PageUp/PageDown, Home/End, and Alt+1 through Alt+0 visible-row activation.
 
