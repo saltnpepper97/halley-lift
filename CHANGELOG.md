@@ -9,6 +9,7 @@
   configurable delay, speed, endpoint pause, and fade/ease timing. Keep icons,
   hints, layout, accessibility names, and activation targets fixed; preserve
   hover progress across live title changes and fade back when leaving or typing.
+  Repeat forward passes after a short fade instead of slowly scrolling backward.
 - Remove unused selection-marker space outside cluster search, bringing result
   icons closer to the left edge. Make results and row insets, content and text
   gaps, cluster marker size, search gap, draft inset, bottom gap, and error-text

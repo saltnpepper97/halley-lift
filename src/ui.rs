@@ -1254,6 +1254,62 @@ mod tests {
         )
         .unwrap();
         assert!(renderer.animation_timeout(faded).is_none());
+
+        // Drive frames only from their scheduled deadlines, with a stationary
+        // pointer and no live title changes or cursor blink to wake the loop.
+        // A fitting title must not stop the overflowing description repeating.
+        results[1].title = "Short title".into();
+        results[1].subtitle = Some("Long description with extra details. ".repeat(2));
+        config.ui.hover_scroll_speed = 160;
+        config.ui.hover_scroll_delay_ms = 100;
+        config.ui.hover_scroll_pause_ms = 120;
+        config.ui.hover_scroll_transition_ms = 50;
+        renderer.hover_scroll.clear();
+        renderer.pointer(InputEvent::PointerMove {
+            position: Point::new(hovered.origin.x + 2.0, hovered.origin.y + 2.0),
+        });
+        let mut now = faded;
+        let mut previous_offset = 0.0;
+        let mut resets = 0;
+        for _ in 0..1000 {
+            draw_palette_at(
+                &mut pixels,
+                width,
+                height,
+                &mut renderer,
+                &mut icons,
+                make_view!(&results),
+                now,
+            )
+            .unwrap();
+            let snapshot = renderer.snapshot.as_ref().unwrap();
+            assert!(!snapshot.items.iter().any(|item| matches!(item,
+                PaintItem::Text { key, .. } if key.ends_with("/title-1/marquee"))));
+            let offset = snapshot
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    PaintItem::Text {
+                        key, rect, clip, ..
+                    } if key.ends_with("/subtitle-1/marquee") => {
+                        Some(clip.origin.x - rect.origin.x)
+                    }
+                    _ => None,
+                })
+                .unwrap_or(0.0);
+            if offset < previous_offset {
+                resets += 1;
+            }
+            previous_offset = offset;
+            if resets == 3 {
+                break;
+            }
+            let next = renderer
+                .animation_timeout(now)
+                .expect("overflow must schedule repeats without other input");
+            now += next.max(Duration::from_micros(1));
+        }
+        assert_eq!(resets, 3);
     }
 
     #[test]
