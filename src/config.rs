@@ -182,8 +182,8 @@ impl Default for LiftPositionConfig {
 impl Default for LiftRoundingConfig {
     fn default() -> Self {
         Self {
-            panel: 18,
-            dropdown: 14,
+            panel: 12,
+            dropdown: 12,
             search: 12,
             row: 12,
             badge: 10,
