@@ -57,7 +57,7 @@ action is pending; successful activation closes Lift as usual.
 
 Live node and cluster results recover from API disconnects and missed events by
 reconnecting for a complete snapshot. Failed initial loads retry in the
-background, with a one-second pause between attempts. Servers without working
+background, with a one-second pause between attempts. Servers that reject
 subscriptions use repeated node and cluster queries. Lift keeps the last
 successful results while reconnecting and replaces them when fresh data arrives.
 

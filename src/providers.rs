@@ -28,7 +28,7 @@ pub struct ProviderIndex {
     apps: Vec<DesktopApp>,
     nodes: Vec<CachedNode>,
     clusters: Vec<CachedCluster>,
-    live_rx: Option<LiveUpdates>,
+    live_updates: Option<LiveUpdates>,
     live_wake: Option<calloop::channel::Sender<()>>,
     terminal: String,
     terminal_icon_name: Option<String>,
@@ -79,7 +79,7 @@ impl ProviderIndex {
             apps,
             nodes: Vec::new(),
             clusters: Vec::new(),
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal,
             terminal_icon_name,
@@ -87,7 +87,7 @@ impl ProviderIndex {
     }
 
     pub fn needs_live_refresh(&self) -> bool {
-        self.live_rx.is_none()
+        self.live_updates.is_none()
     }
 
     pub fn set_live_waker(&mut self, wake: calloop::channel::Sender<()>) {
@@ -98,11 +98,11 @@ impl ProviderIndex {
         if !self.needs_live_refresh() {
             return;
         }
-        self.live_rx = LiveUpdates::start(api_options(), self.live_wake.clone()).ok();
+        self.live_updates = LiveUpdates::start(api_options(), self.live_wake.clone()).ok();
     }
 
     pub fn finish_live_refresh_if_ready(&mut self) -> Option<(usize, usize)> {
-        let snapshot = self.live_rx.as_mut()?.poll_latest()?;
+        let snapshot = self.live_updates.as_mut()?.poll_latest()?;
         self.nodes = cached_nodes(&snapshot.nodes);
         self.clusters = cached_clusters(&snapshot.clusters);
         Some((self.nodes.len(), self.clusters.len()))
@@ -1170,7 +1170,7 @@ exec '\''/bin/zsh'\'' -i'"#
                 })
                 .collect(),
             clusters: Vec::new(),
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal: String::new(),
             terminal_icon_name: None,
@@ -1208,7 +1208,7 @@ exec '\''/bin/zsh'\'' -i'"#
                 subtitle: "2 members on DP-1".into(),
                 search_text: "release 3 DP-1".to_ascii_lowercase(),
             }],
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal: "kitty -e".into(),
             terminal_icon_name: None,
@@ -1461,7 +1461,7 @@ exec '\''/bin/zsh'\'' -i'"#
             apps: vec![app("kitty", "Kitty", "kitty", "kitty")],
             nodes: Vec::new(),
             clusters: Vec::new(),
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal: "foot -e".into(),
             terminal_icon_name: None,
