@@ -832,12 +832,19 @@ mod tests {
                     ("subtitle", result.subtitle.as_ref().unwrap(), index > 0),
                 ] {
                     let key = format!("/{prefix}-{index}");
-                    let PaintItem::Text { text, rect, clip, .. } = prepared.items.iter().find(|item| {
+                    let PaintItem::Text { text, rect, clip, font, .. } = prepared.items.iter().find(|item| {
                         matches!(item, PaintItem::Text { key: item_key, .. } if item_key.ends_with(&key))
                     }).unwrap() else { unreachable!() };
+                    // Available text width and font metrics vary across hosts.
+                    // Even the ordinary LibreOffice title may need an ellipsis.
+                    let overflows = renderer.text.measure(font, original).width > clip.size.width;
                     if must_truncate {
+                        assert!(overflows, "{key} must exercise truncation");
+                    }
+                    if overflows {
                         assert!(text.ends_with('…'), "{key}: {text}");
                         assert!(text.len() < original.len());
+                        assert!(original.starts_with(text.strip_suffix('…').unwrap()));
                     } else {
                         assert_eq!(text, original);
                     }
