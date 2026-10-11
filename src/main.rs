@@ -593,7 +593,7 @@ impl LiftApp {
     /// snaps back to the first entry; a stationary cursor emits no motion event, so
     /// it only moves again once the mouse is physically dragged over another row.
     fn refresh_results_typed(&mut self) {
-        self.font.clear_hover();
+        self.font.reset_scroll();
         self.status = None;
         self.refresh_results();
         self.selected = 0;
@@ -1044,7 +1044,6 @@ impl LiftApp {
         if self.escape_dismissal.press(event.raw_code, event.keysym) {
             return;
         }
-        self.font.clear_hover();
         self.selection_authority.keyboard_activity();
         if self.modifiers.alt
             && self.config.alt_number_jump

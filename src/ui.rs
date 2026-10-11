@@ -213,7 +213,6 @@ pub struct FontRenderer {
     rows: Vec<(usize, UiRect, ResultIdentity)>,
     pub snapshot: Option<PreparedView>,
     tints: HashMap<(u64, [u8; 4]), Arc<ImageData>>,
-    hover_position: Option<Point>,
     hover_scroll: HoverScroll,
     next_animation_tick: Option<Instant>,
 }
@@ -253,7 +252,6 @@ impl FontRenderer {
             rows: Vec::new(),
             snapshot: None,
             tints: HashMap::new(),
-            hover_position: None,
             hover_scroll: HoverScroll::default(),
             next_animation_tick: None,
         };
@@ -290,15 +288,11 @@ impl FontRenderer {
         self.view.text_value("query").unwrap_or(current).to_owned()
     }
     pub fn pointer(&mut self, event: InputEvent) {
-        match &event {
-            InputEvent::PointerMove { position } => self.hover_position = Some(*position),
-            InputEvent::PointerCancel | InputEvent::WindowFocus(false) => self.clear_hover(),
-            _ => {}
-        }
         self.view.handle_event(event);
     }
-    pub fn clear_hover(&mut self) {
-        self.hover_position = None;
+    pub fn reset_scroll(&mut self) {
+        self.hover_scroll.clear();
+        self.next_animation_tick = None;
     }
     pub fn animation_timeout(&self, now: Instant) -> Option<Duration> {
         self.next_animation_tick
@@ -308,7 +302,7 @@ impl FontRenderer {
         self.next_animation_tick.is_some_and(|tick| now >= tick)
     }
 
-    fn animate_hover(&mut self, prepared: &mut PreparedView, view: View<'_>, now: Instant) {
+    fn animate_selection(&mut self, prepared: &mut PreparedView, view: View<'_>, now: Instant) {
         self.next_animation_tick = None;
         if !view.config.ui.hover_scroll {
             self.hover_scroll.clear();
@@ -320,14 +314,15 @@ impl FontRenderer {
             .filter(|(_, rect, _)| rect.size.width > 0.0 && rect.size.height > 0.0)
             .map(|(_, _, identity)| identity.action.clone())
             .collect();
-        let hovered = self.hover_position.and_then(|position| {
-            self.rows
-                .iter()
-                .find(|(_, rect, _)| rect.contains(position))
-                .map(|(_, _, identity)| &identity.action)
-        });
+        let selected = self
+            .rows
+            .iter()
+            .find(|(index, rect, _)| {
+                *index == view.selected && rect.size.width > 0.0 && rect.size.height > 0.0
+            })
+            .map(|(_, _, identity)| &identity.action);
         self.hover_scroll
-            .reconcile(hovered, &visible, now, &view.config.ui);
+            .reconcile(selected, &visible, now, &view.config.ui);
         let mut overlays = Vec::new();
         for (index, _, identity) in &self.rows {
             let result = &view.results[*index];
@@ -810,7 +805,7 @@ fn draw_palette_at(
     // Presentation overrides retain Lift's connected chrome and configurable caret.
     // Rasterization and clipping still run exclusively through the toolkit surface.
     let mut prepared: PreparedView = prepared.clone();
-    renderer.animate_hover(&mut prepared, view, now);
+    renderer.animate_selection(&mut prepared, view, now);
     renderer.snapshot = Some(prepared.clone());
     prepared.items.retain_mut(|item| {
         if let PaintItem::Card {
@@ -993,7 +988,94 @@ mod tests {
     }
 
     #[test]
-    fn hovered_overflow_scrolls_in_place_and_survives_live_title_changes() {
+    fn keyboard_selected_app_description_scrolls_when_its_title_fits() {
+        let mut results = error_test_results();
+        results.truncate(1);
+        results[0].title = "Discord".into();
+        results[0].subtitle = Some("All-in-one voice and text chat for gamers that's free, secure, and works on both your desktop and phone.".into());
+        results[0].action = LiftAction::LaunchApp {
+            app_id: "discord".into(),
+        };
+        let mut config = LiftConfig {
+            width: 760,
+            icon_size: 28,
+            alt_number_jump: true,
+            ..Default::default()
+        };
+        config.ui.row_padding = 25;
+        let input = ModeInputState {
+            mode: LiftMode::General,
+            query: "discord".into(),
+        };
+        let draft = ClusterDraft::default();
+        let view = View {
+            config: &config,
+            input: &input,
+            mode: LiftMode::General,
+            results: &results,
+            selected: 0,
+            scroll_offset: 0,
+            draft: &draft,
+            status: None,
+            cursor_visible: false,
+        };
+        let mut renderer = FontRenderer::new(&config.ui.font).unwrap();
+        let mut icons = IconCache::new(&config);
+        let width = config.width;
+        let height = surface_height(view) as u32;
+        let mut pixels = vec![0; (width * height * 4) as usize];
+        let start = Instant::now();
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            view,
+            start,
+        )
+        .unwrap();
+        let snapshot = renderer.snapshot.as_ref().unwrap();
+        let description = snapshot
+            .items
+            .iter()
+            .find_map(|item| match item {
+                PaintItem::Text { key, text, .. } if key.ends_with("/subtitle-0") => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        assert_ne!(description, results[0].subtitle.as_deref().unwrap());
+        // Keyboard selection starts animation without any pointer events.
+        assert!(renderer.animation_timeout(start).is_some());
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            view,
+            start + Duration::from_secs(3),
+        )
+        .unwrap();
+        let snapshot = renderer.snapshot.as_ref().unwrap();
+        assert!(!snapshot.items.iter().any(
+            |item| matches!(item, PaintItem::Text { key, .. } if key.ends_with("/title-0/marquee"))
+        ));
+        let offset = snapshot
+            .items
+            .iter()
+            .find_map(|item| match item {
+                PaintItem::Text {
+                    key, rect, clip, ..
+                } if key.ends_with("/subtitle-0/marquee") => Some(clip.origin.x - rect.origin.x),
+                _ => None,
+            })
+            .expect("keyboard-selected description should scroll even when its title fits");
+        assert!(offset > 0.0);
+    }
+
+    #[test]
+    fn selected_overflow_scrolls_in_place_and_survives_live_title_changes() {
         let mut results = error_test_results();
         for (index, result) in results.iter_mut().enumerate() {
             result.action = LiftAction::LaunchApp {
@@ -1017,6 +1099,7 @@ mod tests {
             query: "node".into(),
         };
         let draft = ClusterDraft::default();
+        let mut selected = 1;
         macro_rules! make_view {
             ($results:expr) => {
                 View {
@@ -1024,7 +1107,7 @@ mod tests {
                     input: &input,
                     mode: LiftMode::Nodes,
                     results: $results,
-                    selected: 1,
+                    selected,
                     scroll_offset: 0,
                     draft: &draft,
                     status: None,
@@ -1050,7 +1133,7 @@ mod tests {
         .unwrap();
         let resting = renderer.snapshot.as_ref().unwrap().clone();
         let resting_pixels = pixels.clone();
-        assert!(renderer.animation_timeout(start).is_none());
+        assert!(renderer.animation_timeout(start).is_some());
         let hovered = resting.rects["row-1"];
         renderer.pointer(InputEvent::PointerMove {
             position: Point::new(hovered.origin.x + 2.0, hovered.origin.y + 2.0),
@@ -1191,10 +1274,11 @@ mod tests {
             previous_offset = offset;
         }
         eprintln!(
-            "60 hover-scroll frames rendered in {:?}",
+            "60 text-scroll frames rendered in {:?}",
             frame_start.elapsed()
         );
         let moving = moving + Duration::from_millis(60 * 16);
+        selected = 0;
         renderer.pointer(InputEvent::PointerCancel);
         draw_palette_at(
             &mut pixels,
@@ -1218,6 +1302,7 @@ mod tests {
         )
         .unwrap();
         assert!(renderer.animation_timeout(faded).is_none());
+        selected = 1;
         config.ui.hover_scroll = false;
         renderer.pointer(InputEvent::PointerMove {
             position: Point::new(hovered.origin.x + 2.0, hovered.origin.y + 2.0),
@@ -1239,6 +1324,7 @@ mod tests {
             )
         );
         let short = resting.rects["row-0"];
+        selected = 0;
         config.ui.hover_scroll = true;
         renderer.pointer(InputEvent::PointerMove {
             position: Point::new(short.origin.x + 2.0, short.origin.y + 2.0),
@@ -1264,13 +1350,14 @@ mod tests {
         config.ui.hover_scroll_delay_ms = 100;
         config.ui.hover_scroll_pause_ms = 120;
         config.ui.hover_scroll_transition_ms = 50;
+        selected = 1;
         renderer.hover_scroll.clear();
         renderer.pointer(InputEvent::PointerMove {
             position: Point::new(hovered.origin.x + 2.0, hovered.origin.y + 2.0),
         });
         let mut now = faded;
         let mut previous_offset = 0.0;
-        let mut resets = 0;
+        let mut returns = 0;
         for _ in 0..1000 {
             draw_palette_at(
                 &mut pixels,
@@ -1297,11 +1384,11 @@ mod tests {
                     _ => None,
                 })
                 .unwrap_or(0.0);
-            if offset < previous_offset {
-                resets += 1;
+            if offset == 0.0 && previous_offset > 0.0 {
+                returns += 1;
             }
             previous_offset = offset;
-            if resets == 3 {
+            if returns == 3 {
                 break;
             }
             let next = renderer
@@ -1309,7 +1396,7 @@ mod tests {
                 .expect("overflow must schedule repeats without other input");
             now += next.max(Duration::from_micros(1));
         }
-        assert_eq!(resets, 3);
+        assert_eq!(returns, 3);
     }
 
     #[test]

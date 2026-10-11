@@ -81,10 +81,10 @@ lift:
     draft-padding 14               # Horizontal inset inside the cluster draft.
     results-bottom-gap 8           # Space below the last result.
     status-padding 3               # Vertical space on each side of error text.
-    hover-scroll true              # Reveal overflowing result text on hover.
+    hover-scroll true              # Scroll overflowing text in the highlighted row.
     hover-scroll-delay-ms 900       # Wait before starting.
     hover-scroll-speed 30           # Pixels per second.
-    hover-scroll-pause-ms 1200      # Hold at the far end before fading and repeating.
+    hover-scroll-pause-ms 1200      # Hold at each end before reversing.
     hover-scroll-transition-ms 180  # Fade and ease duration.
     dropdown-gap 0
     dropdown-padding 10

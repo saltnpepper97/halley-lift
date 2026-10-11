@@ -320,16 +320,17 @@ cluster marker (8–32px). `search-gap`, `draft-padding`, `results-bottom-gap`, 
 zero. An omitted `results-bottom-gap` retains the previous `max(row-gap, 8)`
 behavior. These settings apply on the next Lift invocation.
 
-Hovering a truncated result reveals its full title and description inside their
-existing text areas. By default, Lift waits 900ms, fades in the full text, scrolls
-at 30 pixels per second with eased starts and stops, pauses at the end for
-1200ms, then fades back to the beginning and repeats while hovered. Each pass
-scrolls forward; there is no slow reverse trip. Leaving or using the keyboard
-fades back to the ellipsis; icons and shortcut hints remain fixed. Text that fits
-does not scroll.
+The highlighted result reveals its full title and description inside their
+existing text areas, whether selected with the keyboard or by mouse hover.
+By default, Lift waits 900ms, fades in the full text, and scrolls back and forth
+at 30 pixels per second with eased starts and stops and a 1200ms pause at each
+end. Motion repeats while that row stays highlighted. Changing selection fades
+the previous row back to the ellipsis; icons and shortcut hints remain fixed.
+Text that fits does not scroll.
 Set `ui.hover-scroll false` to disable this. Adjust `hover-scroll-delay-ms`,
 `hover-scroll-speed`, `hover-scroll-pause-ms`, and `hover-scroll-transition-ms`
-to tune it. Live title changes retain hover progress for the same node.
+to tune it. These settings also apply to keyboard selection. Live title changes
+retain scrolling progress for the same node.
 
 Running-node titles follow the application's actual title updates, including
 activity spinners. Lift prefers compositor subscriptions; if unavailable or

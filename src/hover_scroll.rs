@@ -167,37 +167,50 @@ fn sample_cycle(elapsed: Duration, distance: f32, config: &LiftUiConfig) -> Samp
     let delay = config.hover_scroll_delay_ms as f64 / 1000.0;
     let pause = config.hover_scroll_pause_ms as f64 / 1000.0;
     let (duration, _) = movement(distance, speed, transition);
-    // Keep each pass in one direction. Retracing a long label at reading speed
-    // can take minutes; fade back to the ellipsis instead, then repeat.
-    let cycle = delay + transition * 2.0 + duration + pause;
-    let mut time = elapsed.as_secs_f64() % cycle;
-    if time < delay {
+    let elapsed = elapsed.as_secs_f64();
+    if elapsed < delay {
         return Sample {
             offset: 0.0,
             reveal: 0.0,
-            next: Some(Duration::from_secs_f64(delay - time)),
+            next: Some(Duration::from_secs_f64(delay - elapsed)),
         };
     }
-    time -= delay;
-    let (offset, reveal) = if time < transition {
-        (0.0, ease(time / transition))
+    // Reveal once at the beginning. Subsequent trips retain the full text,
+    // stopping gently at each end instead of fading or jumping to the start.
+    let elapsed = elapsed - delay;
+    if elapsed < transition {
+        return Sample {
+            offset: 0.0,
+            reveal: ease(elapsed / transition),
+            next: Some(FRAME_INTERVAL),
+        };
+    }
+    let cycle = duration * 2.0 + pause * 2.0;
+    let mut time = (elapsed - transition) % cycle;
+    let offset = if time < duration {
+        travelled(time, distance, speed, transition)
     } else {
-        time -= transition;
+        time -= duration;
+        if time < pause {
+            return Sample {
+                offset: distance as f32,
+                reveal: 1.0,
+                next: Some(Duration::from_secs_f64(pause - time)),
+            };
+        }
+        time -= pause;
         if time < duration {
-            (travelled(time, distance, speed, transition), 1.0)
+            distance as f32 - travelled(time, distance, speed, transition)
         } else {
             time -= duration;
-            if time < pause {
-                return Sample {
-                    offset: distance as f32,
-                    reveal: 1.0,
-                    next: Some(Duration::from_secs_f64(pause - time)),
-                };
-            }
-            time -= pause;
-            (distance as f32, 1.0 - ease(time / transition))
+            return Sample {
+                offset: 0.0,
+                reveal: 1.0,
+                next: Some(Duration::from_secs_f64(pause - time)),
+            };
         }
     };
+    let reveal = 1.0;
     Sample {
         offset,
         reveal,
@@ -210,7 +223,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pauses_eases_and_fades_before_repeating_forward() {
+    fn pauses_and_repeats_smoothly_in_both_directions() {
         let config = LiftUiConfig::default();
         let distance = 90.0;
         let transition = config.hover_scroll_transition_ms as f64 / 1000.0;
@@ -225,12 +238,22 @@ mod tests {
         assert!(sample(start + 0.01).offset < 0.1);
         assert!((sample(start + duration / 2.0).offset - 45.0).abs() < 0.01);
         assert_eq!(sample(start + duration + 0.1).offset, 90.0);
-        let end = start + duration + config.hover_scroll_pause_ms as f64 / 1000.0 + transition;
-        assert_eq!(sample(end - 0.001).offset, 90.0);
-        assert!(sample(end - 0.001).reveal < 0.01);
-        assert_eq!(sample(end + 0.001).offset, 0.0);
-        assert_eq!(sample(end + 0.001).reveal, 0.0);
-        assert!((sample(end + start + duration / 2.0).offset - 45.0).abs() < 0.01);
+        let pause = config.hover_scroll_pause_ms as f64 / 1000.0;
+        let reverse = start + duration + pause;
+        assert_eq!(sample(reverse).offset, 90.0);
+        assert!((sample(reverse + duration / 2.0).offset - 45.0).abs() < 0.01);
+        let returned = reverse + duration;
+        assert_eq!(sample(returned + 0.01).offset, 0.0);
+        assert_eq!(sample(returned + pause / 2.0).reveal, 1.0);
+        let repeat = returned + pause;
+        assert!((sample(repeat + duration / 2.0).offset - 45.0).abs() < 0.01);
+        assert_eq!(sample(repeat + duration / 2.0).reveal, 1.0);
+        // Eased starts and stops match positions on both sides of reversals.
+        for boundary in [start, start + duration, reverse, returned, repeat] {
+            assert!(
+                (sample(boundary + 0.001).offset - sample(boundary - 0.001).offset).abs() < 0.001
+            );
+        }
         assert!(
             sample_cycle(Duration::from_secs(10), 0.0, &config)
                 .next
@@ -251,35 +274,36 @@ mod tests {
         for distance in [0.3, 90.7, 1250.25] {
             let mut now = start;
             let mut previous = 0.0;
-            let mut previous_reveal = 0.0;
-            let mut resets = 0;
+            let mut previous_at = start;
+            let mut returns = 0;
             let mut passes = 0;
             for _ in 0..20_000 {
                 scroll.reconcile(Some(&action), &visible, now, &config);
                 let sample = scroll.sample(&action, now, distance, &config);
                 assert!((0.0..=distance).contains(&sample.offset));
-                if sample.offset < previous {
-                    // Position resets only after the full text has faded out.
-                    assert!(previous_reveal < 0.03);
-                    assert_eq!(sample.reveal, 0.0);
-                    resets += 1;
+                let step = config.hover_scroll_speed as f32
+                    * now.duration_since(previous_at).as_secs_f32();
+                assert!((sample.offset - previous).abs() <= step + 0.001);
+                if sample.offset == 0.0 && previous > 0.0 {
+                    assert_eq!(sample.reveal, 1.0);
+                    returns += 1;
                 }
                 if sample.offset == distance && previous < distance {
                     passes += 1;
                 }
-                if resets == 3 {
+                if returns == 3 {
                     break;
                 }
                 previous = sample.offset;
-                previous_reveal = sample.reveal;
+                previous_at = now;
                 let next = sample
                     .next
-                    .expect("hover must always schedule another pass");
+                    .expect("selection must always schedule another pass");
                 // A real clock advances even when sub-nanosecond boundaries
                 // round down. Simulate at least a microsecond of dispatch time.
                 now += next.max(Duration::from_micros(1));
             }
-            assert_eq!(resets, 3, "distance={distance}");
+            assert_eq!(returns, 3, "distance={distance}");
             assert_eq!(passes, 3, "distance={distance}");
         }
     }
