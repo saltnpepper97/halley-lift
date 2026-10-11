@@ -112,8 +112,17 @@ pub struct LiftCursorConfig {
 pub struct LiftUiConfig {
     pub top_margin: i32,
     pub padding: i32,
+    pub search_gap: i32,
     pub dropdown_gap: i32,
     pub dropdown_padding: i32,
+    pub results_padding: i32,
+    pub results_bottom_gap: i32,
+    pub row_padding: i32,
+    pub row_content_gap: i32,
+    pub row_text_gap: i32,
+    pub marker_size: i32,
+    pub draft_padding: i32,
+    pub status_padding: i32,
     pub search_height: i32,
     pub draft_height: i32,
     pub row_height: i32,
@@ -253,8 +262,17 @@ impl Default for LiftUiConfig {
         Self {
             top_margin: 96,
             padding: 20,
+            search_gap: 12,
             dropdown_gap: 0,
             dropdown_padding: 10,
+            results_padding: 20,
+            results_bottom_gap: 8,
+            row_padding: 5,
+            row_content_gap: 16,
+            row_text_gap: 7,
+            marker_size: 18,
+            draft_padding: 14,
+            status_padding: 3,
             search_height: 60,
             draft_height: 36,
             row_height: 64,
@@ -401,7 +419,10 @@ impl LiftConfig {
         out.ui.top_margin = cfg
             .get_or("lift.ui.top-margin", out.ui.top_margin)
             .clamp(0, 480);
-        out.ui.padding = cfg.get_or("lift.ui.padding", out.ui.padding).clamp(8, 48);
+        out.ui.padding = cfg.get_or("lift.ui.padding", out.ui.padding).clamp(0, 48);
+        out.ui.search_gap = cfg
+            .get_or("lift.ui.search-gap", out.ui.search_gap)
+            .clamp(0, 48);
         out.ui.dropdown_gap = cfg
             .get_or("lift.ui.dropdown-gap", out.ui.dropdown_gap)
             .clamp(0, 32);
@@ -418,6 +439,32 @@ impl LiftConfig {
             .get_or("lift.ui.row-height", out.ui.row_height)
             .clamp(46, 110);
         out.ui.row_gap = cfg.get_or("lift.ui.row-gap", out.ui.row_gap).clamp(0, 20);
+        // Existing configs keep their shared inset and bottom-gap behavior
+        // until they explicitly set the independent results spacing.
+        out.ui.results_padding = cfg
+            .get_or("lift.ui.results-padding", out.ui.padding)
+            .clamp(0, 48);
+        out.ui.results_bottom_gap = cfg
+            .get_or("lift.ui.results-bottom-gap", out.ui.row_gap.max(8))
+            .clamp(0, 32);
+        out.ui.row_padding = cfg
+            .get_or("lift.ui.row-padding", out.ui.row_padding)
+            .clamp(0, 32);
+        out.ui.row_content_gap = cfg
+            .get_or("lift.ui.row-content-gap", out.ui.row_content_gap)
+            .clamp(0, 48);
+        out.ui.row_text_gap = cfg
+            .get_or("lift.ui.row-text-gap", out.ui.row_text_gap)
+            .clamp(0, 32);
+        out.ui.marker_size = cfg
+            .get_or("lift.ui.marker-size", out.ui.marker_size)
+            .clamp(8, 32);
+        out.ui.draft_padding = cfg
+            .get_or("lift.ui.draft-padding", out.ui.draft_padding)
+            .clamp(0, 48);
+        out.ui.status_padding = cfg
+            .get_or("lift.ui.status-padding", out.ui.status_padding)
+            .clamp(0, 16);
         out.ui.section_height = cfg
             .get_or("lift.ui.section-height", out.ui.section_height)
             .clamp(0, 40);
@@ -636,6 +683,40 @@ end
     }
 
     #[test]
+    fn spacing_settings_allow_zero_and_preserve_legacy_inheritance() {
+        let legacy =
+            load_text("lift:\n  ui:\n    padding 13\n    row-gap 12\n  end\nend\n").unwrap();
+        assert_eq!(legacy.ui.results_padding, 13);
+        assert_eq!(legacy.ui.results_bottom_gap, 12);
+        let explicit = load_text(
+            "lift:\n  ui:\n    padding 13\n    row-gap 12\n    search-gap 0\n    results-padding 0\n    row-padding 0\n    row-content-gap 0\n    row-text-gap 0\n    marker-size 24\n    draft-padding 0\n    results-bottom-gap 0\n    status-padding 0\n  end\nend\n",
+        ).unwrap();
+        assert_eq!(explicit.ui.padding, 13);
+        assert_eq!(explicit.ui.search_gap, 0);
+        assert_eq!(explicit.ui.results_padding, 0);
+        assert_eq!(explicit.ui.row_padding, 0);
+        assert_eq!(explicit.ui.row_content_gap, 0);
+        assert_eq!(explicit.ui.row_text_gap, 0);
+        assert_eq!(explicit.ui.marker_size, 24);
+        assert_eq!(explicit.ui.draft_padding, 0);
+        assert_eq!(explicit.ui.results_bottom_gap, 0);
+        assert_eq!(explicit.ui.status_padding, 0);
+        let bounded = load_text(
+            "lift:\n  ui:\n    padding -1\n    results-padding 999\n    row-padding -1\n    row-content-gap 999\n    row-text-gap -1\n    marker-size 0\n    search-gap -1\n    draft-padding 999\n    results-bottom-gap 999\n    status-padding -1\n  end\nend\n",
+        ).unwrap();
+        assert_eq!(bounded.ui.padding, 0);
+        assert_eq!(bounded.ui.results_padding, 48);
+        assert_eq!(bounded.ui.row_padding, 0);
+        assert_eq!(bounded.ui.row_content_gap, 48);
+        assert_eq!(bounded.ui.row_text_gap, 0);
+        assert_eq!(bounded.ui.marker_size, 8);
+        assert_eq!(bounded.ui.search_gap, 0);
+        assert_eq!(bounded.ui.draft_padding, 48);
+        assert_eq!(bounded.ui.results_bottom_gap, 32);
+        assert_eq!(bounded.ui.status_padding, 0);
+    }
+
+    #[test]
     fn documented_templates_keep_default_settings() {
         for text in [
             DEFAULT_CONFIG_TEMPLATE,
@@ -643,6 +724,16 @@ end
         ] {
             let config = load_text(text).unwrap();
             assert!(config.fuzzy);
+            let defaults = LiftConfig::default().ui;
+            assert_eq!(config.ui.search_gap, defaults.search_gap);
+            assert_eq!(config.ui.results_padding, defaults.results_padding);
+            assert_eq!(config.ui.results_bottom_gap, defaults.results_bottom_gap);
+            assert_eq!(config.ui.row_padding, defaults.row_padding);
+            assert_eq!(config.ui.row_content_gap, defaults.row_content_gap);
+            assert_eq!(config.ui.row_text_gap, defaults.row_text_gap);
+            assert_eq!(config.ui.marker_size, defaults.marker_size);
+            assert_eq!(config.ui.draft_padding, defaults.draft_padding);
+            assert_eq!(config.ui.status_padding, defaults.status_padding);
             assert_eq!(config.providers, LiftConfig::default().providers);
             for mode in [
                 LiftMode::Apps,
