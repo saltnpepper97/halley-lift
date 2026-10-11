@@ -988,8 +988,7 @@ impl LiftApp {
             && self.config.alt_number_jump
             && let Some(offset) = alt_number_offset(event.keysym)
         {
-            let index = self.scroll_offset + offset;
-            if index < self.results.len() {
+            if let Some(index) = self.font.alt_number_result(offset, &self.results) {
                 self.selected = index;
                 self.activate_selected();
             }
