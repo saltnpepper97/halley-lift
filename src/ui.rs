@@ -9,7 +9,7 @@ use halley_ui::input::{InputEvent, Key, Modifiers};
 use halley_ui::software::{PixelFormat, Surface};
 use halley_ui::{
     ActionId, Button, Card, Color, Column, Font, Image, Label, Point, Rect as UiRect, Row,
-    TextInput, TextSystem, Theme, UiView,
+    TextInput, TextOverflow, TextSystem, Theme, UiView,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,6 +37,9 @@ pub fn panel_height(config: &LiftConfig) -> i32 {
     config.ui.search_height.max(1)
 }
 fn dropdown_visible(view: View<'_>) -> bool {
+    results_visible(view) || view.status.is_some()
+}
+fn results_visible(view: View<'_>) -> bool {
     !view.input.query.trim().is_empty()
         || view.input.mode != LiftMode::General
         || (view.mode == LiftMode::Clusters && view.draft.count() > 0)
@@ -50,15 +53,22 @@ fn dropdown_base_height(view: View<'_>) -> i32 {
     }
     if ui.footer_height > 0 {
         height += ui.row_gap + ui.footer_height;
-        if view.status.is_some() {
-            height += ui.hint_font_size as i32 + 6;
-        }
+    }
+    if view.status.is_some() {
+        height += status_height(view.config) + ui.row_gap;
     }
     height
 }
 
+fn status_height(config: &LiftConfig) -> i32 {
+    config.ui.hint_font_size.clamp(1, u16::MAX as u32) as i32 + 6
+}
+
 /// Limit the viewport to complete rows instead of letting Taffy shrink their text.
 pub fn visible_results(view: View<'_>, height: u32) -> usize {
+    if !results_visible(view) {
+        return 0;
+    }
     let ui = &view.config.ui;
     let mut used = dropdown_base_height(view);
     let mut section = "";
@@ -92,6 +102,9 @@ pub fn surface_height(view: View<'_>) -> i32 {
         return panel_height(view.config);
     }
     let mut height = dropdown_base_height(view);
+    if !results_visible(view) {
+        return height.clamp(panel_height(view.config), 980);
+    }
     // A constrained viewport may scroll farther than the requested viewport.
     // Keep requesting the full content size when navigating its final rows.
     let scroll_offset = view.scroll_offset.min(
@@ -389,9 +402,27 @@ pub fn draw_palette(
         .gap(ui.dropdown_gap as f32)
         .child(search_card);
     let show_dropdown = dropdown_visible(view)
-        && (visible_results > 0 || view.results.is_empty() || view.draft.count() > 0);
+        && (visible_results > 0
+            || view.results.is_empty()
+            || view.draft.count() > 0
+            || view.status.is_some());
     if show_dropdown {
         let mut list = Column::new("results").gap(0.0).grow(1.0);
+        if let Some(status) = view.status {
+            list = list
+                .child(
+                    label(
+                        "status",
+                        status,
+                        config,
+                        ui.hint_font_size,
+                        color(&config.colors.danger, Color::rgb8(235, 154, 143)),
+                    )
+                    .overflow(TextOverflow::EllipsisEnd)
+                    .height(status_height(config) as f32),
+                )
+                .child(Row::new("status-gap").height(ui.row_gap as f32));
+        }
         if view.mode == LiftMode::Clusters && view.draft.count() > 0 {
             let name = if view.input.query.trim().is_empty() {
                 "untitled"
@@ -538,7 +569,7 @@ pub fn draw_palette(
             }
         }
         list = list.child(Row::new("list-bottom").height(ui.row_gap.max(8) as f32));
-        if view.results.is_empty() {
+        if results_visible(view) && view.results.is_empty() {
             list = list.child(
                 label(
                     "no-results",
@@ -552,18 +583,6 @@ pub fn draw_palette(
         }
         if ui.footer_height > 0 {
             list = list.child(Row::new("footer-gap").height(ui.row_gap as f32));
-            if let Some(status) = view.status {
-                list = list.child(
-                    label(
-                        "status",
-                        status,
-                        config,
-                        ui.hint_font_size,
-                        color(&config.colors.danger, Color::rgb8(235, 154, 143)),
-                    )
-                    .height(ui.hint_font_size as f32 + 6.0),
-                );
-            }
             list = list.child(
                 label(
                     "footer",
@@ -668,6 +687,210 @@ pub fn draw_palette(
 mod tests {
     use super::*;
     use crate::model::{LiftAction, LiftResultKind};
+
+    fn error_test_results() -> Vec<LiftResult> {
+        vec![
+            LiftResult {
+                section: "Apps".into(),
+                title: "Editor".into(),
+                subtitle: None,
+                icon_name: None,
+                kind: LiftResultKind::App,
+                score: 1.0,
+                is_field_pinned: false,
+                shortcut_hint: None,
+                action: LiftAction::ReloadConfig,
+            };
+            3
+        ]
+    }
+
+    #[test]
+    fn empty_query_error_is_painted_without_footer_or_unrequested_results() {
+        let config = LiftConfig::default();
+        assert_eq!(config.ui.footer_height, 0);
+        let input = ModeInputState::default();
+        let results = error_test_results();
+        let draft = ClusterDraft::default();
+        let view = View {
+            config: &config,
+            input: &input,
+            mode: LiftMode::General,
+            results: &results,
+            selected: 0,
+            scroll_offset: 0,
+            draft: &draft,
+            status: None,
+            cursor_visible: true,
+        };
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        let mut icons = IconCache::new(&config);
+        let error = "Use cluster search before finalizing a draft";
+        for status in [None, Some(error), None] {
+            let view = View { status, ..view };
+            let height = surface_height(view) as u32;
+            assert_eq!(visible_results(view, height), 0);
+            if status.is_some() {
+                assert!(height > config.ui.search_height as u32);
+            } else {
+                assert_eq!(height, config.ui.search_height as u32);
+            }
+            let mut pixels = vec![0; (config.width * height * 4) as usize];
+            draw_palette(
+                &mut pixels,
+                config.width,
+                height,
+                &mut renderer,
+                &mut icons,
+                view,
+            )
+            .unwrap();
+            assert!(renderer.rows.is_empty());
+            let prepared = renderer.snapshot.as_ref().unwrap();
+            assert_eq!(prepared.rects.contains_key("status"), status.is_some());
+            assert!(!prepared.rects.contains_key("footer"));
+            assert!(!prepared.rects.contains_key("no-results"));
+            if status.is_some() {
+                let PaintItem::Text { rect, clip, text, .. } = prepared.items.iter().find(|item| {
+                    matches!(item, PaintItem::Text { key, .. } if key.ends_with("/status"))
+                }).expect("error must produce painted text") else { unreachable!() };
+                assert_eq!(text, error);
+                assert!(rect.intersection(*clip).size.height > 0.0);
+                let region = prepared.rects["status"];
+                let mut painted_error_pixels = 0;
+                for y in region.origin.y.ceil() as u32
+                    ..(region.origin.y + region.size.height).floor() as u32
+                {
+                    for x in region.origin.x.ceil() as u32
+                        ..(region.origin.x + region.size.width).floor() as u32
+                    {
+                        let pixel = &pixels[((y * config.width + x) * 4) as usize..][..4];
+                        // Error glyphs use the configured warm danger color;
+                        // dropdown background pixels are blue/grey instead.
+                        if u16::from(pixel[2]) > u16::from(pixel[1]) + 30 {
+                            painted_error_pixels += 1;
+                        }
+                    }
+                }
+                assert!(
+                    painted_error_pixels > 0,
+                    "error glyphs must reach the framebuffer"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constrained_output_keeps_error_visible_when_no_result_row_fits() {
+        let results = error_test_results();
+        let input = ModeInputState {
+            query: "editor".into(),
+            ..Default::default()
+        };
+        let draft = ClusterDraft::default();
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        for footer_height in [0, 28] {
+            for gap in [0, 18] {
+                let mut config = LiftConfig::default();
+                config.ui.footer_height = footer_height;
+                config.ui.dropdown_gap = gap;
+                let mut icons = IconCache::new(&config);
+                let view = View {
+                    config: &config,
+                    input: &input,
+                    mode: LiftMode::General,
+                    results: &results,
+                    selected: 0,
+                    scroll_offset: 0,
+                    draft: &draft,
+                    status: Some("Select apps or nodes before finalizing"),
+                    cursor_visible: true,
+                };
+                assert_eq!(visible_results(view, 180), 0);
+                let mut pixels = vec![0; (config.width * 180 * 4) as usize];
+                draw_palette(
+                    &mut pixels,
+                    config.width,
+                    180,
+                    &mut renderer,
+                    &mut icons,
+                    view,
+                )
+                .unwrap();
+                let prepared = renderer.snapshot.as_ref().unwrap();
+                let status = prepared
+                    .rects
+                    .get("status")
+                    .expect("status must not depend on visible result rows");
+                assert!(status.origin.y >= config.ui.search_height as f32);
+                assert!(status.origin.y + status.size.height <= 180.0);
+                assert!(status.size.height >= status_height(&config) as f32 - 0.01);
+                assert!(renderer.rows.is_empty());
+                assert_eq!(prepared.rects.contains_key("footer"), footer_height > 0);
+            }
+        }
+        let config = LiftConfig::default();
+        let view = View {
+            config: &config,
+            input: &input,
+            mode: LiftMode::General,
+            results: &results,
+            selected: 0,
+            scroll_offset: 0,
+            draft: &draft,
+            status: None,
+            cursor_visible: true,
+        };
+        assert_eq!(visible_results(view, 244), 2);
+        assert_eq!(
+            visible_results(
+                View {
+                    status: Some("API error"),
+                    ..view
+                },
+                244
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn long_error_is_ellipsized_within_the_panel() {
+        let config = LiftConfig::default();
+        let input = ModeInputState::default();
+        let draft = ClusterDraft::default();
+        let message = "API request failed: très longue fenêtre 日本語 ".repeat(20);
+        let view = View {
+            config: &config,
+            input: &input,
+            mode: LiftMode::General,
+            results: &[],
+            selected: 0,
+            scroll_offset: 0,
+            draft: &draft,
+            status: Some(&message),
+            cursor_visible: true,
+        };
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        let mut icons = IconCache::new(&config);
+        let height = surface_height(view) as u32;
+        let mut pixels = vec![0; (420 * height * 4) as usize];
+        draw_palette(&mut pixels, 420, height, &mut renderer, &mut icons, view).unwrap();
+        let prepared = renderer.snapshot.as_ref().unwrap();
+        let PaintItem::Text {
+            rect, clip, text, ..
+        } = prepared
+            .items
+            .iter()
+            .find(|item| matches!(item, PaintItem::Text { key, .. } if key.ends_with("/status")))
+            .expect("long error must produce painted text")
+        else {
+            unreachable!()
+        };
+        assert!(text.starts_with("API request failed:"));
+        assert!(text.len() < message.len());
+        assert!(rect.origin.x + rect.size.width <= clip.origin.x + clip.size.width + 0.01);
+    }
 
     #[test]
     fn constrained_viewport_keeps_complete_rows_and_the_scrolled_selection_visible() {

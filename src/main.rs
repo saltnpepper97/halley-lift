@@ -546,6 +546,7 @@ impl LiftApp {
     /// snaps back to the first entry; a stationary cursor emits no motion event, so
     /// it only moves again once the mouse is physically dragged over another row.
     fn refresh_results_typed(&mut self) {
+        self.status = None;
         self.refresh_results();
         self.selected = 0;
         self.scroll_offset = 0;
@@ -847,9 +848,16 @@ impl LiftApp {
         if self.exit {
             return;
         }
-        if let Err(error) = self.activation.start(action, exit_reason) {
-            self.status = Some(error);
-            self.mark_redraw();
+        match self.activation.start(action, exit_reason) {
+            Ok(true) => {
+                self.status = None;
+                self.mark_redraw();
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.status = Some(error);
+                self.mark_redraw();
+            }
         }
     }
 
