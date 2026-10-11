@@ -335,6 +335,10 @@ search mode continues to run typed commands through your interactive shell.
 
 Mouse support includes hover selection, row click activation, and wheel navigation inside the Lift panel. Typing gives selection authority to the keyboard and resets the highlight to the first result even when the pointer is resting over another row; real pointer motion returns authority to hover selection. Empty general search shows only the rounded search bar; typing or entering a mode prefix expands a connected results body below it. Keyboard navigation supports held direction keys, Left/Right, PageUp/PageDown, Home/End, and Alt+1 through Alt+0 visible-row activation.
 
+Escape closes Lift when the key is released. Lift consumes the complete key
+press and release before returning focus, preserving browser video fullscreen
+in the window underneath. Holding Escape keeps Lift open until release.
+
 Mouse and accessibility activation verify that a retained row still has the
 action and title it was painted with. If live updates replace or reorder a
 same-title result, its old row waits for repainting before accepting activation.

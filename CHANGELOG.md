@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Dismiss on Escape release after consuming its complete press/release pair,
+  so the window regaining focus does not inherit a held Escape and leave
+  browser video fullscreen. Handle focus and keyboard removal during dismissal.
 - Keep result icons and cluster markers aligned when names or descriptions
   are long. Ellipsize both text lines within the available row width while
   preserving shortcut hints and full accessible names.

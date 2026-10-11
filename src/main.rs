@@ -40,7 +40,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
+        keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers, RawModifiers},
         pointer::{PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
@@ -57,7 +57,7 @@ use ui::{
     surface_height, visible_results,
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{
         wl_callback, wl_display, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
@@ -223,7 +223,7 @@ fn run() -> Result<(), String> {
             |_readiness, listener, app: &mut LiftApp| {
                 loop {
                     match listener.accept() {
-                        Ok(_) => app.exit = true,
+                        Ok(_) => app.exit("instance-toggle"),
                         Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
                         Err(_) => break,
                     }
@@ -263,6 +263,7 @@ fn run() -> Result<(), String> {
         height,
         size_request: SizeRequest::new(width, height),
         exit: false,
+        escape_dismissal: EscapeDismissal::default(),
         config,
         font,
         index,
@@ -419,6 +420,7 @@ struct LiftApp {
     height: u32,
     size_request: SizeRequest,
     exit: bool,
+    escape_dismissal: EscapeDismissal,
     config: LiftConfig,
     font: FontRenderer,
     index: ProviderIndex,
@@ -432,6 +434,41 @@ struct LiftApp {
     draft: ClusterDraft,
     modifiers: Modifiers,
     status: Option<String>,
+}
+
+/// Keep keyboard focus until the dismissal key's complete press/release pair
+/// has reached Lift. Otherwise the next client can enter with Escape held.
+#[derive(Default)]
+struct EscapeDismissal {
+    key: Option<u32>,
+}
+
+impl EscapeDismissal {
+    fn press(&mut self, raw_code: u32, keysym: Keysym) -> bool {
+        if self.pending() {
+            return true;
+        }
+        if keysym == Keysym::Escape {
+            self.key = Some(raw_code);
+            return true;
+        }
+        false
+    }
+
+    fn pending(&self) -> bool {
+        self.key.is_some()
+    }
+
+    fn release(&mut self, raw_code: u32) -> bool {
+        if self.key == Some(raw_code) {
+            return self.cancel();
+        }
+        false
+    }
+
+    fn cancel(&mut self) -> bool {
+        self.key.take().is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -855,7 +892,7 @@ impl LiftApp {
     }
 
     fn start_activation(&mut self, action: Activation, exit_reason: &'static str) {
-        if self.exit {
+        if self.exit || self.escape_dismissal.pending() {
             return;
         }
         match self.activation.start(action, exit_reason) {
@@ -885,6 +922,11 @@ impl LiftApp {
     }
 
     fn exit(&mut self, reason: &str) {
+        // Also defer action completions and single-instance toggles while the
+        // dismissal key is held, so neither can restore focus prematurely.
+        if self.escape_dismissal.pending() {
+            return;
+        }
         self.debug(format_args!("exit: {reason}"));
         self.exit = true;
     }
@@ -979,6 +1021,9 @@ impl LiftApp {
     }
 
     fn handle_key(&mut self, event: KeyEvent) {
+        if self.escape_dismissal.press(event.raw_code, event.keysym) {
+            return;
+        }
         self.selection_authority.keyboard_activity();
         if self.modifiers.alt
             && self.config.alt_number_jump
@@ -1020,7 +1065,6 @@ impl LiftApp {
             return;
         }
         match event.keysym {
-            Keysym::Escape => self.exit("escape"),
             Keysym::Up | Keysym::Left => self.move_selection(-1),
             Keysym::Down | Keysym::Right => self.move_selection(1),
             Keysym::Page_Up => self.move_page(-1),
@@ -1159,6 +1203,7 @@ impl Dispatch<wl_callback::WlCallback, ResizeSync> for LiftApp {
 
 impl LayerShellHandler for LiftApp {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
+        self.escape_dismissal.cancel();
         self.exit("layer-closed");
     }
     fn configure(
@@ -1219,13 +1264,21 @@ impl SeatHandler for LiftApp {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
+        seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
         if capability == Capability::Keyboard
+            && self.keyboard.as_ref().is_some_and(|keyboard| {
+                keyboard
+                    .data::<KeyboardData<Self>>()
+                    .is_some_and(|data| data.seat() == &seat)
+            })
             && let Some(keyboard) = self.keyboard.take()
         {
             keyboard.release();
+            if self.escape_dismissal.cancel() {
+                self.exit("escape-keyboard-removed");
+            }
         }
         if capability == Capability::Pointer
             && let Some(pointer) = self.pointer.take()
@@ -1233,7 +1286,10 @@ impl SeatHandler for LiftApp {
             pointer.release();
         }
     }
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, conn: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        // Seat removal need not be preceded by a capability-change event.
+        self.remove_capability(conn, qh, seat, Capability::Keyboard);
+    }
 }
 
 impl KeyboardHandler for LiftApp {
@@ -1277,7 +1333,10 @@ impl KeyboardHandler for LiftApp {
             {
                 bridge.update(prepared, "Halley Lift", false);
             }
-            if self.config.close_on_focus_loss && self.had_keyboard_focus {
+            if self.escape_dismissal.cancel() {
+                // We cannot receive the release after focus has moved away.
+                self.exit("escape-focus-loss");
+            } else if self.config.close_on_focus_loss && self.had_keyboard_focus {
                 self.exit("focus-loss");
             }
         }
@@ -1310,8 +1369,13 @@ impl KeyboardHandler for LiftApp {
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        // Match the physical key, even if modifiers or the keymap changed
+        // between press and release and its keysym is no longer Escape.
+        if self.escape_dismissal.release(event.raw_code) {
+            self.exit("escape");
+        }
     }
     fn update_modifiers(
         &mut self,
@@ -1452,6 +1516,59 @@ impl ProvidesRegistryState for LiftApp {
         &mut self.registry_state
     }
     registry_handlers!(OutputState, SeatState);
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::{EscapeDismissal, KeyEvent, Keysym};
+
+    #[test]
+    fn dismissal_waits_for_release_and_consumes_repeats() {
+        let mut dismissal = EscapeDismissal::default();
+        assert!(!dismissal.press(30, Keysym::a));
+        assert!(!dismissal.release(30));
+        assert!(dismissal.press(1, Keysym::Escape));
+        for _ in 0..10 {
+            assert!(dismissal.press(1, Keysym::Escape));
+            assert!(dismissal.pending());
+        }
+        // Other keys cannot edit or activate while dismissal is pending.
+        assert!(dismissal.press(28, Keysym::Return));
+        assert!(!dismissal.release(28));
+        assert!(dismissal.pending());
+        assert!(dismissal.release(1));
+        assert!(!dismissal.pending());
+        assert!(!dismissal.release(1));
+    }
+
+    #[test]
+    fn release_matches_the_pressed_physical_key_after_a_keymap_change() {
+        let mut dismissal = EscapeDismissal::default();
+        assert!(dismissal.press(58, Keysym::Escape));
+        let release = KeyEvent {
+            time: 0,
+            raw_code: 58,
+            keysym: Keysym::Caps_Lock,
+            utf8: None,
+        };
+        // A different Escape-mapped key must not finish this dismissal.
+        assert!(dismissal.press(1, Keysym::Escape));
+        assert!(!dismissal.release(1));
+        assert!(dismissal.release(release.raw_code));
+        assert!(!dismissal.pending());
+    }
+
+    #[test]
+    fn losing_focus_or_keyboard_does_not_wait_for_an_unreachable_release() {
+        let mut dismissal = EscapeDismissal::default();
+        assert!(!dismissal.cancel());
+        assert!(dismissal.press(1, Keysym::Escape));
+        assert!(dismissal.cancel());
+        assert!(!dismissal.pending());
+        assert!(!dismissal.cancel());
+        assert!(!dismissal.release(1));
+        assert!(!dismissal.press(30, Keysym::a));
+    }
 }
 
 #[cfg(test)]
