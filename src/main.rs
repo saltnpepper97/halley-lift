@@ -8,15 +8,14 @@ mod activation;
 mod blur;
 mod config;
 mod icons;
+mod instance;
 mod mode;
 mod model;
 mod providers;
 mod ui;
 
 use std::{
-    fs, io,
-    os::unix::{fs::PermissionsExt, net::UnixListener, net::UnixStream},
-    path::PathBuf,
+    io,
     time::{Duration, Instant},
 };
 
@@ -78,7 +77,7 @@ fn run() -> Result<(), String> {
     // a documented config on disk on first run.
     bootstrap_default_config();
 
-    let Some((_single_instance, instance_listener)) = acquire_single_instance()? else {
+    let Some((_single_instance, instance_listener)) = instance::acquire()? else {
         return Ok(());
     };
 
@@ -295,70 +294,6 @@ fn run() -> Result<(), String> {
         app.flush_redraw();
     }
     Ok(())
-}
-
-struct SingleInstanceGuard {
-    socket_path: PathBuf,
-}
-
-impl Drop for SingleInstanceGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.socket_path);
-    }
-}
-
-/// Acquires single-instance ownership. On success returns the guard (which unlinks the
-/// socket on drop) plus the bound, nonblocking listener — the caller wires it into the
-/// event loop so a second invocation toggles this instance closed. Returns `Ok(None)` when
-/// another instance is already running and answering.
-fn acquire_single_instance() -> Result<Option<(SingleInstanceGuard, UnixListener)>, String> {
-    let socket_path = lift_socket_path()?;
-    for _ in 0..2 {
-        match UnixListener::bind(&socket_path) {
-            Ok(listener) => {
-                listener
-                    .set_nonblocking(true)
-                    .map_err(|err| format!("set instance socket nonblocking: {err}"))?;
-                return Ok(Some((SingleInstanceGuard { socket_path }, listener)));
-            }
-            Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-                if UnixStream::connect(&socket_path).is_ok() {
-                    return Ok(None);
-                }
-                match fs::remove_file(&socket_path) {
-                    Ok(()) => continue,
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-                    Err(err) => {
-                        return Err(format!(
-                            "remove stale instance socket {}: {err}",
-                            socket_path.display()
-                        ));
-                    }
-                }
-            }
-            Err(err) => {
-                return Err(format!(
-                    "bind instance socket {}: {err}",
-                    socket_path.display()
-                ));
-            }
-        }
-    }
-
-    Err(format!(
-        "bind instance socket {} after stale cleanup",
-        socket_path.display()
-    ))
-}
-
-fn lift_socket_path() -> Result<PathBuf, String> {
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| "XDG_RUNTIME_DIR is not set".to_string())?;
-    let dir = PathBuf::from(runtime_dir).join("halley");
-    fs::create_dir_all(&dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
-        .map_err(|err| format!("chmod {}: {err}", dir.display()))?;
-    Ok(dir.join("halley-lift.sock"))
 }
 
 fn perf(args: std::fmt::Arguments<'_>) {
