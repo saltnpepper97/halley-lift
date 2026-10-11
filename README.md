@@ -55,6 +55,12 @@ background with two-second socket read/write timeouts, keeping search and Escape
 responsive if the API stops replying. Repeated activation is ignored while an
 action is pending; successful activation closes Lift as usual.
 
+Live node and cluster results recover from API disconnects and missed events by
+reconnecting for a complete snapshot. Failed initial loads retry in the
+background, with a one-second pause between attempts. Servers without working
+subscriptions use repeated node and cluster queries. Lift keeps the last
+successful results while reconnecting and replaces them when fresh data arrives.
+
 Launching Lift again closes the existing instance. Coordination uses
 `$XDG_RUNTIME_DIR/halley/halley-lift.sock` and a `halley-lift.lock` file in the
 same directory. The lock file stays for the runtime session; the operating system
