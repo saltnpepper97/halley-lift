@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep result icons and cluster markers aligned when names or descriptions
+  are long. Ellipsize both text lines within the available row width while
+  preserving shortcut hints and full accessible names.
 - Restore the 1px separator between connected search and dropdown chrome,
   including "No results" and action errors. Honor the existing `colors.divider`
   setting; a fully transparent color hides the line.
