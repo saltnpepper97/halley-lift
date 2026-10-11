@@ -47,7 +47,7 @@ fn results_visible(view: View<'_>) -> bool {
 fn dropdown_base_height(view: View<'_>) -> i32 {
     let ui = &view.config.ui;
     let mut height =
-        ui.search_height + ui.dropdown_gap + ui.dropdown_padding * 2 + ui.row_gap.max(8);
+        ui.search_height + ui.dropdown_gap + ui.dropdown_padding * 2 + ui.results_bottom_gap;
     if view.mode == LiftMode::Clusters && view.draft.count() > 0 {
         height += ui.draft_height + ui.row_gap;
     }
@@ -61,7 +61,7 @@ fn dropdown_base_height(view: View<'_>) -> i32 {
 }
 
 fn status_height(config: &LiftConfig) -> i32 {
-    config.ui.hint_font_size.clamp(1, u16::MAX as u32) as i32 + 6
+    config.ui.hint_font_size.clamp(1, u16::MAX as u32) as i32 + config.ui.status_padding * 2
 }
 
 /// Limit the viewport to complete rows instead of letting Taffy shrink their text.
@@ -384,7 +384,7 @@ pub fn draw_palette(
         button_pressed: transparent(),
     };
     let mut search = Row::new("search-content")
-        .gap(12.0)
+        .gap(ui.search_gap as f32)
         .align(Align::Center)
         .height(ui.search_height as f32)
         .grow(1.0);
@@ -464,7 +464,7 @@ pub fn draw_palette(
             list = list.child(
                 Card::new("draft")
                     .height(ui.draft_height as f32)
-                    .padding_xy(14.0, 0.0)
+                    .padding_xy(ui.draft_padding as f32, 0.0)
                     .style(style(search_fill, transparent(), 0, config.rounding.draft))
                     .child(label(
                         "draft-label",
@@ -501,25 +501,26 @@ pub fn draw_palette(
                 section = &result.section;
             }
             let mut row = Row::new(format!("row-content-{index}"))
-                .gap(16.0)
+                .gap(ui.row_content_gap as f32)
                 .align(Align::Center)
                 .grow(1.0)
                 .height(ui.row_height as f32);
-            let mut marker = Row::new(format!("marker-slot-{index}"))
-                .width(18.0)
-                .height(18.0);
-            if view.mode == LiftMode::Clusters
-                && view.draft.contains_result(result)
-                && let Some(data) = icons.selection_glyph(18).cloned()
-            {
-                marker = marker.child(renderer.image(
-                    format!("marker-{index}"),
-                    data,
-                    Some(accent),
-                    18.0,
-                ));
+            if view.mode == LiftMode::Clusters {
+                let mut marker = Row::new(format!("marker-slot-{index}"))
+                    .width(ui.marker_size as f32)
+                    .height(ui.marker_size as f32);
+                if view.draft.contains_result(result)
+                    && let Some(data) = icons.selection_glyph(ui.marker_size as u32).cloned()
+                {
+                    marker = marker.child(renderer.image(
+                        format!("marker-{index}"),
+                        data,
+                        Some(accent),
+                        ui.marker_size as f32,
+                    ));
+                }
+                row = row.child(marker);
             }
-            row = row.child(marker);
             if config.icons {
                 let mut slot = Row::new(format!("icon-slot-{index}"))
                     .width(config.icon_size as f32)
@@ -535,7 +536,7 @@ pub fn draw_palette(
                 row = row.child(slot);
             }
             let mut titles = Column::new(format!("titles-{index}"))
-                .gap(7.0)
+                .gap(ui.row_text_gap as f32)
                 // Give text the remaining width without shrinking the icon or marker.
                 .width(0.0)
                 .grow(1.0)
@@ -592,7 +593,7 @@ pub fn draw_palette(
                         Button::new(format!("open-{index}"), "")
                             .accessible_label(&result.title)
                             .action(ActionId::new(format!("open-{index}")))
-                            .padding_xy(5.0, 0.0)
+                            .padding_xy(ui.row_padding as f32, 0.0)
                             .height(ui.row_height as f32)
                             .grow(1.0)
                             .child(row),
@@ -608,7 +609,7 @@ pub fn draw_palette(
                 list = list.child(Row::new(format!("row-gap-{index}")).height(ui.row_gap as f32));
             }
         }
-        list = list.child(Row::new("list-bottom").height(ui.row_gap.max(8) as f32));
+        list = list.child(Row::new("list-bottom").height(ui.results_bottom_gap as f32));
         if results_visible(view) && view.results.is_empty() {
             list = list.child(
                 label(
@@ -644,7 +645,7 @@ pub fn draw_palette(
         root = root.child(
             Card::new("dropdown-chrome")
                 .width(width as f32)
-                .padding_xy(ui.padding as f32, ui.dropdown_padding as f32)
+                .padding_xy(ui.results_padding as f32, ui.dropdown_padding as f32)
                 .style(style(
                     dropdown_fill,
                     if outline {
@@ -807,12 +808,20 @@ mod tests {
             let mut pixels = vec![0; (width * height * 4) as usize];
             draw_palette(&mut pixels, width, height, &mut renderer, &mut icons, view).unwrap();
             let prepared = renderer.snapshot.as_ref().unwrap();
-            let marker_x = prepared.rects["marker-slot-0"].origin.x;
+            let marker_x = prepared
+                .rects
+                .get("marker-slot-0")
+                .map(|rect| rect.origin.x);
             let title_x = prepared.rects["titles-0"].origin.x;
             for (index, result) in results.iter().enumerate() {
-                let marker = prepared.rects[&format!("marker-slot-{index}")];
-                assert!((marker.origin.x - marker_x).abs() < 0.01);
-                assert!((marker.size.width - 18.0).abs() < 0.01);
+                let marker = prepared.rects.get(&format!("marker-slot-{index}"));
+                if mode == LiftMode::Clusters {
+                    let marker = marker.unwrap();
+                    assert!((marker.origin.x - marker_x.unwrap()).abs() < 0.01);
+                    assert!((marker.size.width - config.ui.marker_size as f32).abs() < 0.01);
+                } else {
+                    assert!(marker.is_none());
+                }
                 let titles = prepared.rects[&format!("titles-{index}")];
                 assert!((titles.origin.x - title_x).abs() < 0.01);
                 let hint = prepared.rects[&format!("hint-{index}")];
@@ -859,6 +868,115 @@ mod tests {
                     .find(|node| node.key == format!("open-{index}"))
                     .unwrap();
                 assert_eq!(button.label.as_ref(), Some(&result.title));
+            }
+        }
+    }
+
+    #[test]
+    fn configured_spacing_controls_result_insets_and_cluster_markers() {
+        let mut results = error_test_results();
+        for (index, result) in results.iter_mut().enumerate() {
+            result.subtitle = Some("Description".into());
+            result.action = LiftAction::LaunchApp {
+                app_id: format!("editor-{index}"),
+            };
+        }
+        let input = ModeInputState {
+            mode: LiftMode::General,
+            query: "Editor".into(),
+        };
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        for (inset, row_padding, content_gap, text_gap, marker_size, bottom_gap) in [
+            (20, 5, 16, 7, 18, 8),
+            (4, 0, 0, 0, 8, 0),
+            (36, 11, 24, 12, 32, 20),
+        ] {
+            for (mode, icons_enabled) in [
+                (LiftMode::General, true),
+                (LiftMode::Nodes, false),
+                (LiftMode::Clusters, true),
+                (LiftMode::Clusters, false),
+            ] {
+                let mut config = LiftConfig {
+                    icons: icons_enabled,
+                    ..Default::default()
+                };
+                config.ui.padding = 24;
+                config.ui.search_gap = 3;
+                config.ui.results_padding = inset;
+                config.ui.row_padding = row_padding;
+                config.ui.row_content_gap = content_gap;
+                config.ui.row_text_gap = text_gap;
+                config.ui.marker_size = marker_size;
+                config.ui.results_bottom_gap = bottom_gap;
+                config.ui.draft_padding = 9;
+                config.ui.status_padding = 4;
+                config.ui.row_height = 96;
+                let mut draft = ClusterDraft::default();
+                if mode == LiftMode::Clusters {
+                    draft.toggle_result(&results[2]);
+                }
+                let view = View {
+                    config: &config,
+                    input: &input,
+                    mode,
+                    results: &results,
+                    selected: 1,
+                    scroll_offset: 0,
+                    draft: &draft,
+                    status: Some("Action failed"),
+                    cursor_visible: false,
+                };
+                let width = 760;
+                let height = surface_height(view) as u32;
+                assert_eq!(visible_results(view, height), results.len());
+                let mut icons = IconCache::new(&config);
+                let mut pixels = vec![0; (width * height * 4) as usize];
+                draw_palette(&mut pixels, width, height, &mut renderer, &mut icons, view).unwrap();
+                let rects = &renderer.snapshot.as_ref().unwrap().rects;
+                let near = |actual: f32, expected: f32| {
+                    assert!((actual - expected).abs() < 0.01, "{actual} != {expected}");
+                };
+                near(
+                    rects["query"].origin.x,
+                    24.0 + config.search_icon.size as f32 + 3.0,
+                );
+                near(
+                    rects["status"].size.height,
+                    config.ui.hint_font_size as f32 + 8.0,
+                );
+                near(rects["list-bottom"].size.height, bottom_gap as f32);
+                for index in 0..results.len() {
+                    near(rects[&format!("row-{index}")].origin.x, inset as f32);
+                    let row_x = (inset + row_padding) as f32;
+                    near(rects[&format!("row-content-{index}")].origin.x, row_x);
+                    let mut next_x = row_x;
+                    if mode == LiftMode::Clusters {
+                        let marker = rects[&format!("marker-slot-{index}")];
+                        near(marker.origin.x, next_x);
+                        near(marker.size.width, marker_size as f32);
+                        next_x += (marker_size + content_gap) as f32;
+                    } else {
+                        assert!(!rects.contains_key(&format!("marker-slot-{index}")));
+                    }
+                    if icons_enabled {
+                        let icon = rects[&format!("icon-slot-{index}")];
+                        near(icon.origin.x, next_x);
+                        near(icon.size.width, config.icon_size as f32);
+                        next_x += (config.icon_size as i32 + content_gap) as f32;
+                    }
+                    near(rects[&format!("titles-{index}")].origin.x, next_x);
+                    let title = rects[&format!("title-{index}")];
+                    let subtitle = rects[&format!("subtitle-{index}")];
+                    near(
+                        subtitle.origin.y - title.origin.y - title.size.height,
+                        text_gap as f32,
+                    );
+                }
+                if mode == LiftMode::Clusters {
+                    near(rects["marker-2"].size.width, marker_size as f32);
+                    near(rects["draft-label"].origin.x - rects["draft"].origin.x, 9.0);
+                }
             }
         }
     }
