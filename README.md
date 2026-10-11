@@ -290,6 +290,9 @@ maximum number of rows shown at once. When the compositor grants less space,
 Lift shows fewer complete rows; keyboard and wheel navigation scroll through the
 full result set.
 
+Long result names and descriptions end with an ellipsis so icons and shortcut
+hints stay aligned. Accessible result names retain the full title.
+
 `colors.divider` controls the 1px line between the search box and its connected
 dropdown, including "No results" and action errors. Set it to `"#00000000"` to
 hide the line. A positive `ui.dropdown-gap` separates the panels and omits the

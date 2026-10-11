@@ -536,22 +536,30 @@ pub fn draw_palette(
             }
             let mut titles = Column::new(format!("titles-{index}"))
                 .gap(7.0)
+                // Give text the remaining width without shrinking the icon or marker.
+                .width(0.0)
                 .grow(1.0)
-                .child(label(
-                    format!("title-{index}"),
-                    &result.title,
-                    config,
-                    ui.title_font_size,
-                    text_color,
-                ));
+                .child(
+                    label(
+                        format!("title-{index}"),
+                        &result.title,
+                        config,
+                        ui.title_font_size,
+                        text_color,
+                    )
+                    .overflow(TextOverflow::EllipsisEnd),
+                );
             if let Some(subtitle) = &result.subtitle {
-                titles = titles.child(label(
-                    format!("subtitle-{index}"),
-                    subtitle,
-                    config,
-                    ui.subtitle_font_size,
-                    subtext,
-                ));
+                titles = titles.child(
+                    label(
+                        format!("subtitle-{index}"),
+                        subtitle,
+                        config,
+                        ui.subtitle_font_size,
+                        subtext,
+                    )
+                    .overflow(TextOverflow::EllipsisEnd),
+                );
             }
             row = row.child(titles);
             let shortcut = if config.alt_number_jump && visible < 10 {
@@ -744,6 +752,116 @@ pub fn draw_palette(
 mod tests {
     use super::*;
     use crate::model::{LiftAction, LiftResultKind};
+
+    #[test]
+    fn long_result_text_ellipsizes_without_shifting_icons_or_hiding_shortcuts() {
+        let mut results = error_test_results();
+        results[0].title = "Editor".into();
+        results[0].subtitle = Some("Text editor".into());
+        results[1].title = "LibreOffice Writer".into();
+        results[1].subtitle = Some(
+            "Create and edit text and graphics in letters, reports, documents and Web pages. "
+                .repeat(2),
+        );
+        results[2].title = "Long title très longue fenêtre 日本語 e\u{301} 👩‍💻 ".repeat(3);
+        results[2].subtitle = Some("Long description 日本語 e\u{301} 👩‍💻 ".repeat(6));
+        for (index, result) in results.iter_mut().enumerate() {
+            result.action = LiftAction::LaunchApp {
+                app_id: format!("editor-{index}"),
+            };
+        }
+        let input = ModeInputState {
+            mode: LiftMode::Apps,
+            query: "Editor".into(),
+        };
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        for (width, icons_enabled, icon_size, mode) in [
+            (760, true, 28, LiftMode::Apps),
+            (420, true, 28, LiftMode::Apps),
+            (320, true, 28, LiftMode::Apps),
+            (420, true, 48, LiftMode::Clusters),
+            (420, false, 28, LiftMode::Apps),
+        ] {
+            let config = LiftConfig {
+                icons: icons_enabled,
+                icon_size,
+                ..Default::default()
+            };
+            let mut draft = ClusterDraft::default();
+            if mode == LiftMode::Clusters {
+                draft.toggle_result(&results[2]);
+            }
+            let view = View {
+                config: &config,
+                input: &input,
+                mode,
+                results: &results,
+                selected: 1,
+                scroll_offset: 0,
+                draft: &draft,
+                status: None,
+                cursor_visible: false,
+            };
+            let height = surface_height(view) as u32;
+            let mut icons = IconCache::new(&config);
+            let mut pixels = vec![0; (width * height * 4) as usize];
+            draw_palette(&mut pixels, width, height, &mut renderer, &mut icons, view).unwrap();
+            let prepared = renderer.snapshot.as_ref().unwrap();
+            let marker_x = prepared.rects["marker-slot-0"].origin.x;
+            let title_x = prepared.rects["titles-0"].origin.x;
+            for (index, result) in results.iter().enumerate() {
+                let marker = prepared.rects[&format!("marker-slot-{index}")];
+                assert!((marker.origin.x - marker_x).abs() < 0.01);
+                assert!((marker.size.width - 18.0).abs() < 0.01);
+                let titles = prepared.rects[&format!("titles-{index}")];
+                assert!((titles.origin.x - title_x).abs() < 0.01);
+                let hint = prepared.rects[&format!("hint-{index}")];
+                assert!(titles.origin.x + titles.size.width <= hint.origin.x + 0.01);
+                assert!(hint.origin.x + hint.size.width <= width as f32 - config.ui.padding as f32);
+                if icons_enabled {
+                    let slot = prepared.rects[&format!("icon-slot-{index}")];
+                    let first = prepared.rects["icon-slot-0"];
+                    assert!((slot.origin.x - first.origin.x).abs() < 0.01);
+                    assert!((slot.size.width - icon_size as f32).abs() < 0.01);
+                    let image = prepared.rects[&format!("icon-{index}")];
+                    assert!((image.origin.x - first.origin.x).abs() < 0.01);
+                    assert!((image.size.width - icon_size as f32).abs() < 0.01);
+                }
+                for (prefix, original, must_truncate) in [
+                    ("title", &result.title, index == 2),
+                    ("subtitle", result.subtitle.as_ref().unwrap(), index > 0),
+                ] {
+                    let key = format!("/{prefix}-{index}");
+                    let PaintItem::Text { text, rect, clip, font, .. } = prepared.items.iter().find(|item| {
+                        matches!(item, PaintItem::Text { key: item_key, .. } if item_key.ends_with(&key))
+                    }).unwrap() else { unreachable!() };
+                    // Available text width and font metrics vary across hosts.
+                    // Even the ordinary LibreOffice title may need an ellipsis.
+                    let overflows = renderer.text.measure(font, original).width > clip.size.width;
+                    if must_truncate {
+                        assert!(overflows, "{key} must exercise truncation");
+                    }
+                    if overflows {
+                        assert!(text.ends_with('…'), "{key}: {text}");
+                        assert!(text.len() < original.len());
+                        assert!(original.starts_with(text.strip_suffix('…').unwrap()));
+                    } else {
+                        assert_eq!(text, original);
+                    }
+                    assert!(
+                        rect.origin.x + rect.size.width <= clip.origin.x + clip.size.width + 0.01
+                    );
+                    assert!(rect.origin.x + rect.size.width <= hint.origin.x + 0.01);
+                }
+                let button = prepared
+                    .semantics
+                    .iter()
+                    .find(|node| node.key == format!("open-{index}"))
+                    .unwrap();
+                assert_eq!(button.label.as_ref(), Some(&result.title));
+            }
+        }
+    }
 
     #[test]
     fn configured_divider_paints_one_row_only_for_connected_dropdowns() {
