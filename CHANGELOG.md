@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep compositor connection setup out of joined startup work and run action
+  requests off the UI thread. Give handshake/action connections two-second
+  read/write timeouts and ignore repeat activation while an action is pending.
 - Keep painting at the compositor's granted size on small or scaled outputs,
   including when a larger dropdown cannot fit. Show fewer complete rows instead
   of squeezing their text, and wait for resize processing before painting new content.

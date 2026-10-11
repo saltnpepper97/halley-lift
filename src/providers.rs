@@ -2,13 +2,13 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::Duration;
 
 use halley_api::{
-    Client, ClusterDraft as ApiClusterDraft, ClusterDraftApp, ClusterTarget, Event, EventTopic,
-    NodeId, NodeKind, NodeSelector,
+    Client, ClusterDraft as ApiClusterDraft, ClusterDraftApp, ClusterTarget, ConnectOptions, Event,
+    EventTopic, NodeId, NodeKind, NodeSelector,
 };
 
 use crate::config::{LiftConfig, default_config_path, resolved_halley_config_path};
@@ -34,7 +34,14 @@ pub struct ProviderIndex {
     live_wake: Option<calloop::channel::Sender<()>>,
     terminal: String,
     terminal_icon_name: Option<String>,
-    client: Option<Arc<Client>>,
+}
+
+fn api_options() -> ConnectOptions {
+    ConnectOptions {
+        read_timeout: Some(Duration::from_secs(2)),
+        write_timeout: Some(Duration::from_secs(2)),
+        ..Default::default()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +77,6 @@ impl ProviderIndex {
         let apps = load_desktop_apps();
         let terminal = config.terminal.trim().to_string();
         let terminal_icon_name = terminal_icon_name_for_apps(&apps, terminal.as_str());
-        let client = Client::connect().map(Arc::new).ok();
         Self {
             apps,
             nodes: Vec::new(),
@@ -80,7 +86,6 @@ impl ProviderIndex {
             live_wake: None,
             terminal,
             terminal_icon_name,
-            client,
         }
     }
 
@@ -97,10 +102,11 @@ impl ProviderIndex {
             return;
         }
         let (tx, rx) = mpsc::channel();
-        let client = self.client.clone();
         let wake = self.live_wake.clone();
         thread::spawn(move || {
-            let Some(client) = client else {
+            // Connect on this worker rather than the joined startup worker.
+            // A stalled API handshake must not delay the window.
+            let Ok(client) = Client::connect_with(api_options()) else {
                 let _ = tx.send((Vec::new(), Vec::new()));
                 if let Some(wake) = wake.as_ref() {
                     let _ = wake.send(());
@@ -323,15 +329,6 @@ impl ProviderIndex {
         }]
     }
 
-    pub fn launch_app(&self, app_id: &str) -> Result<(), String> {
-        let app = self
-            .apps
-            .iter()
-            .find(|app| app.id == app_id)
-            .ok_or_else(|| format!("app `{app_id}` not found"))?;
-        launch_exec(app.exec.as_str(), app.terminal, self.terminal.as_str())
-    }
-
     fn draft_app_launches(&self, app_ids: &[String]) -> Vec<ClusterDraftApp> {
         app_ids
             .iter()
@@ -512,35 +509,99 @@ fn search_config(ctx: &SearchContext) -> Vec<LiftResult> {
         .collect()
 }
 
-pub fn activate_result(index: &ProviderIndex, result: &LiftResult) -> Result<(), String> {
-    match &result.action {
-        LiftAction::LaunchApp { app_id } => index.launch_app(app_id),
-        LiftAction::OpenCluster { id } => index
-            .client()?
-            .open_cluster(ClusterTarget::Id((*id).into()), None)
-            .map_err(|error| error.to_string()),
-        LiftAction::FocusNode { id } => index
-            .client()?
-            .focus_node(Some(NodeSelector::Id(NodeId::new(*id))), None)
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        LiftAction::ReloadConfig => index
-            .client()?
-            .reload_config()
-            .map_err(|error| error.to_string()),
-        LiftAction::ShowBasics => index
-            .client()?
-            .show_basics()
-            .map_err(|error| error.to_string()),
-        LiftAction::OpenConfig { path } => launch_editor(path, index.terminal.as_str()),
-        LiftAction::CreateCluster => Ok(()),
+pub enum Activation {
+    Launch {
+        command: String,
+        terminal: bool,
+        terminal_command: String,
+    },
+    OpenEditor {
+        path: String,
+        terminal_command: String,
+    },
+    Compositor(LiftAction),
+    ClusterDraft(ApiClusterDraft),
+}
+
+impl Activation {
+    pub fn execute(self) -> Result<(), String> {
+        self.execute_with_options(api_options())
+    }
+
+    fn execute_with_options(self, options: ConnectOptions) -> Result<(), String> {
+        match self {
+            Self::Launch {
+                command,
+                terminal,
+                terminal_command,
+            } => launch_exec(&command, terminal, &terminal_command),
+            Self::OpenEditor {
+                path,
+                terminal_command,
+            } => launch_editor(&path, &terminal_command),
+            Self::Compositor(action) => {
+                // Each activation owns its connection: a background query cannot
+                // hold its lock, and a failed request is never retried implicitly.
+                let client = Client::connect_with(options).map_err(|error| error.to_string())?;
+                match action {
+                    LiftAction::OpenCluster { id } => {
+                        client.open_cluster(ClusterTarget::Id(id.into()), None)
+                    }
+                    LiftAction::FocusNode { id } => {
+                        client.focus_node(Some(NodeSelector::Id(NodeId::new(id))), None)
+                    }
+                    LiftAction::ReloadConfig => client.reload_config(),
+                    LiftAction::ShowBasics => client.show_basics(),
+                    _ => return Err("Invalid compositor action".into()),
+                }
+                .map_err(|error| error.to_string())
+            }
+            Self::ClusterDraft(request) => Client::connect_with(options)
+                .map_err(|error| error.to_string())?
+                .finalize_cluster_draft(request, None)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+        }
+    }
+}
+
+pub fn prepare_activation(
+    index: &ProviderIndex,
+    result: &LiftResult,
+) -> Result<Activation, String> {
+    Ok(match &result.action {
+        LiftAction::LaunchApp { app_id } => {
+            let app = index
+                .apps
+                .iter()
+                .find(|app| app.id == *app_id)
+                .ok_or_else(|| format!("app `{app_id}` not found"))?;
+            Activation::Launch {
+                command: app.exec.clone(),
+                terminal: app.terminal,
+                terminal_command: index.terminal.clone(),
+            }
+        }
+        LiftAction::OpenCluster { .. }
+        | LiftAction::FocusNode { .. }
+        | LiftAction::ReloadConfig
+        | LiftAction::ShowBasics => Activation::Compositor(result.action.clone()),
+        LiftAction::OpenConfig { path } => Activation::OpenEditor {
+            path: path.clone(),
+            terminal_command: index.terminal.clone(),
+        },
+        LiftAction::CreateCluster => return Err("Use a cluster draft to create a cluster".into()),
         LiftAction::RunInTerminal { command } => {
             // Run through the user's interactive shell so aliases/functions are loaded,
             // then exec back into that shell so short commands like `ls` stay visible.
             let full = terminal_launch_command(index.terminal.as_str(), command.as_str());
-            launch_exec(full.as_str(), false, index.terminal.as_str())
+            Activation::Launch {
+                command: full,
+                terminal: false,
+                terminal_command: index.terminal.clone(),
+            }
         }
-    }
+    })
 }
 
 fn terminal_launch_command(terminal_command: &str, command: &str) -> String {
@@ -578,17 +639,12 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "sh".into())
 }
 
-pub fn materialize_cluster_draft(
+pub fn prepare_cluster_draft(
     index: &ProviderIndex,
     draft: &ClusterDraft,
     _query: &str,
-) -> Result<(), String> {
-    let request = build_cluster_draft_request(index, draft);
-    index
-        .client()?
-        .finalize_cluster_draft(request, None)
-        .map_err(|error| error.to_string())?;
-    Ok(())
+) -> Activation {
+    Activation::ClusterDraft(build_cluster_draft_request(index, draft))
 }
 
 fn build_cluster_draft_request(index: &ProviderIndex, draft: &ClusterDraft) -> ApiClusterDraft {
@@ -682,14 +738,6 @@ fn shell_words(command: &str) -> Vec<String> {
         words.push(current);
     }
     words
-}
-
-impl ProviderIndex {
-    fn client(&self) -> Result<&Client, String> {
-        self.client
-            .as_deref()
-            .ok_or_else(|| "Halley compositor API is unavailable".into())
-    }
 }
 
 fn provider_rank(kind: &LiftResultKind) -> u8 {
@@ -900,6 +948,244 @@ fn shell_quote(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod api_tests {
+    use super::*;
+    use halley_ipc::{
+        ControlRequest, HALLEY_API_VERSION, HALLEY_IPC_VERSION, Request, Response, ServerInfo,
+        decode_request, encode_response, read_frame_with_fds, write_frame_with_fds,
+    };
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    struct SocketFixture(PathBuf);
+
+    impl SocketFixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "lift-api-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::create_dir(path.join("halley")).unwrap();
+            Self(path)
+        }
+
+        fn socket(&self) -> PathBuf {
+            self.0.join("halley/halley.sock")
+        }
+    }
+
+    impl Drop for SocketFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn request(stream: &UnixStream) -> Request {
+        let (bytes, fds) = read_frame_with_fds(stream, 0).unwrap();
+        assert!(fds.is_empty());
+        decode_request(&bytes).unwrap()
+    }
+
+    fn reply(stream: &UnixStream, response: Response) {
+        write_frame_with_fds(stream, &encode_response(&response).unwrap(), &[]).unwrap();
+    }
+
+    fn run_in_private_runtime(test: &str) -> bool {
+        const MARKER: &str = "HALLEY_LIFT_TEST_API_RUNTIME";
+        if std::env::var_os(MARKER).is_some() {
+            return false;
+        }
+        // The SDK resolves its default path even with an explicit socket path.
+        // Keep that environment requirement local to this test's child process.
+        let fixture = SocketFixture::new();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(MARKER, "1")
+            .env("XDG_RUNTIME_DIR", &fixture.0)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "{test} failed");
+                return true;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("{test} did not finish");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn fake_action(stall_hello: bool, stall_action: bool, focus_node: Option<u64>) {
+        let fixture = SocketFixture::new();
+        let listener = UnixListener::bind(fixture.socket()).unwrap();
+        let (release, blocked) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            assert!(matches!(request(&stream), Request::Hello(_)));
+            if stall_hello {
+                let _ = blocked.recv_timeout(Duration::from_secs(6));
+                return;
+            }
+            reply(
+                &stream,
+                Response::Hello(ServerInfo {
+                    compositor_version: "test".into(),
+                    api_version: HALLEY_API_VERSION,
+                    ipc_protocol: HALLEY_IPC_VERSION,
+                    capabilities: Vec::new(),
+                }),
+            );
+            let action = request(&stream);
+            if let Some(expected) = focus_node {
+                assert!(
+                    matches!(action, Request::Node(halley_ipc::NodeRequest::Focus {
+                    selector: Some(halley_ipc::NodeSelector::Id(actual)), output: None,
+                }) if actual == expected),
+                    "{action:?}"
+                );
+            } else {
+                assert!(matches!(
+                    action,
+                    Request::Control(ControlRequest::ShowBasics)
+                ));
+            }
+            if stall_action {
+                let _ = blocked.recv_timeout(Duration::from_secs(6));
+            } else {
+                reply(&stream, Response::Ack);
+            }
+        });
+        let mut options = api_options();
+        options.socket_path = Some(fixture.socket());
+        let started = Instant::now();
+        let activation = if let Some(id) = focus_node {
+            let index = ProviderIndex {
+                nodes: vec![CachedNode {
+                    id,
+                    title: "Mozilla Firefox".into(),
+                    subtitle: "Running on DP-2".into(),
+                    search_text: "mozilla firefox".into(),
+                    pinned: false,
+                }],
+                ..Default::default()
+            };
+            let results = index.search(&SearchContext {
+                mode: LiftMode::General,
+                query: "firefox".into(),
+                query_lower: "firefox".into(),
+                max_results: 8,
+                draft_count: 0,
+            });
+            let selected = results
+                .iter()
+                .find(|result| result.kind == LiftResultKind::Node)
+                .unwrap();
+            prepare_activation(&index, selected).unwrap()
+        } else {
+            Activation::Compositor(LiftAction::ShowBasics)
+        };
+        let result = activation.execute_with_options(options);
+        let elapsed = started.elapsed();
+        let _ = release.send(());
+        server.join().unwrap();
+        if stall_hello || stall_action {
+            assert!(result.is_err(), "stalled peer should fail");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "timeout was not applied: {elapsed:?}"
+            );
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
+
+    #[test]
+    fn stalled_handshake_times_out() {
+        if run_in_private_runtime("providers::api_tests::stalled_handshake_times_out") {
+            return;
+        }
+        fake_action(true, false, None);
+    }
+
+    #[test]
+    fn stalled_action_reply_times_out() {
+        if run_in_private_runtime("providers::api_tests::stalled_action_reply_times_out") {
+            return;
+        }
+        fake_action(false, true, None);
+    }
+
+    #[test]
+    fn acknowledged_action_succeeds() {
+        if run_in_private_runtime("providers::api_tests::acknowledged_action_succeeds") {
+            return;
+        }
+        fake_action(false, false, None);
+    }
+
+    #[test]
+    fn selected_running_node_sends_exact_focus_request() {
+        if run_in_private_runtime(
+            "providers::api_tests::selected_running_node_sends_exact_focus_request",
+        ) {
+            return;
+        }
+        fake_action(false, false, Some(0x1_0000_0020));
+    }
+
+    #[test]
+    fn startup_index_does_not_wait_for_api() {
+        const MARKER: &str = "HALLEY_LIFT_TEST_STARTUP_INDEX";
+        if std::env::var_os(MARKER).is_some() {
+            ProviderIndex::load(&LiftConfig::default());
+            return;
+        }
+        // Use a child so its runtime directory cannot race other tests' env.
+        let fixture = SocketFixture::new();
+        let listener = UnixListener::bind(fixture.socket()).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "providers::api_tests::startup_index_does_not_wait_for_api",
+            ])
+            .env(MARKER, "1")
+            .env("XDG_RUNTIME_DIR", &fixture.0)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("startup waited on a stalled API");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -975,7 +1261,6 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: String::new(),
             terminal_icon_name: None,
-            client: None,
         };
         let results = index.search(&SearchContext {
             mode: LiftMode::Clusters,
@@ -1015,7 +1300,6 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: "kitty -e".into(),
             terminal_icon_name: None,
-            client: None,
         }
     }
 
@@ -1270,7 +1554,6 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: "foot -e".into(),
             terminal_icon_name: None,
-            client: None,
         };
         let draft = ClusterDraft {
             app_ids: vec!["kitty".into()],
