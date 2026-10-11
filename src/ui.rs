@@ -2,6 +2,7 @@ use halley_ui::assets::ImageData;
 use halley_ui::ui::{Align, CardStyle, PaintItem, PreparedView};
 // Lift composes components; Halley UI owns layout, text, assets, and pixel drawing.
 use crate::config::LiftConfig;
+use crate::hover_scroll::HoverScroll;
 use crate::icons::IconCache;
 use crate::mode::{LiftMode, ModeInputState};
 use crate::model::{ClusterDraft, LiftAction, LiftResult};
@@ -13,6 +14,7 @@ use halley_ui::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {
@@ -211,6 +213,9 @@ pub struct FontRenderer {
     rows: Vec<(usize, UiRect, ResultIdentity)>,
     pub snapshot: Option<PreparedView>,
     tints: HashMap<(u64, [u8; 4]), Arc<ImageData>>,
+    hover_position: Option<Point>,
+    hover_scroll: HoverScroll,
+    next_animation_tick: Option<Instant>,
 }
 impl FontRenderer {
     /// Alt+1 through Alt+0 address the hints on the last painted visible rows.
@@ -248,6 +253,9 @@ impl FontRenderer {
             rows: Vec::new(),
             snapshot: None,
             tints: HashMap::new(),
+            hover_position: None,
+            hover_scroll: HoverScroll::default(),
+            next_animation_tick: None,
         };
         out.view
             .prepare(
@@ -282,7 +290,106 @@ impl FontRenderer {
         self.view.text_value("query").unwrap_or(current).to_owned()
     }
     pub fn pointer(&mut self, event: InputEvent) {
+        match &event {
+            InputEvent::PointerMove { position } => self.hover_position = Some(*position),
+            InputEvent::PointerCancel | InputEvent::WindowFocus(false) => self.clear_hover(),
+            _ => {}
+        }
         self.view.handle_event(event);
+    }
+    pub fn clear_hover(&mut self) {
+        self.hover_position = None;
+    }
+    pub fn animation_timeout(&self, now: Instant) -> Option<Duration> {
+        self.next_animation_tick
+            .map(|tick| tick.saturating_duration_since(now))
+    }
+    pub fn animation_due(&self, now: Instant) -> bool {
+        self.next_animation_tick.is_some_and(|tick| now >= tick)
+    }
+
+    fn animate_hover(&mut self, prepared: &mut PreparedView, view: View<'_>, now: Instant) {
+        self.next_animation_tick = None;
+        if !view.config.ui.hover_scroll {
+            self.hover_scroll.clear();
+            return;
+        }
+        let visible: Vec<_> = self
+            .rows
+            .iter()
+            .filter(|(_, rect, _)| rect.size.width > 0.0 && rect.size.height > 0.0)
+            .map(|(_, _, identity)| identity.action.clone())
+            .collect();
+        let hovered = self.hover_position.and_then(|position| {
+            self.rows
+                .iter()
+                .find(|(_, rect, _)| rect.contains(position))
+                .map(|(_, _, identity)| &identity.action)
+        });
+        self.hover_scroll
+            .reconcile(hovered, &visible, now, &view.config.ui);
+        let mut overlays = Vec::new();
+        for (index, _, identity) in &self.rows {
+            let result = &view.results[*index];
+            for (prefix, original) in [
+                ("title", Some(result.title.as_str())),
+                ("subtitle", result.subtitle.as_deref()),
+            ] {
+                let Some(original) = original else {
+                    continue;
+                };
+                let suffix = format!("/{prefix}-{index}");
+                let Some(PaintItem::Text {
+                    key,
+                    text,
+                    rect,
+                    clip,
+                    font,
+                    color,
+                }) = prepared.items.iter_mut().find(
+                    |item| matches!(item, PaintItem::Text { key, .. } if key.ends_with(&suffix)),
+                )
+                else {
+                    continue;
+                };
+                if text == original || clip.size.width <= 0.0 {
+                    continue;
+                }
+                let size = self.text.measure(font, original);
+                let sample = self.hover_scroll.sample(
+                    &identity.action,
+                    now,
+                    (size.width - clip.size.width).max(0.0),
+                    &view.config.ui,
+                );
+                if let Some(interval) = sample.next {
+                    let tick = now + interval;
+                    self.next_animation_tick = Some(
+                        self.next_animation_tick
+                            .map_or(tick, |previous| previous.min(tick)),
+                    );
+                }
+                if sample.reveal > 0.0 {
+                    let mut full_color = *color;
+                    full_color.a *= sample.reveal;
+                    color.a *= 1.0 - sample.reveal;
+                    overlays.push(PaintItem::Text {
+                        key: format!("{key}/marquee"),
+                        text: original.into(),
+                        rect: UiRect::new(
+                            rect.origin.x - sample.offset,
+                            clip.origin.y + ((clip.size.height - size.height) / 2.0).max(0.0),
+                            size.width,
+                            size.height,
+                        ),
+                        clip: *clip,
+                        font: font.clone(),
+                        color: full_color,
+                    });
+                }
+            }
+        }
+        prepared.items.extend(overlays);
     }
     pub fn accessibility_action(
         &mut self,
@@ -353,6 +460,18 @@ pub fn draw_palette(
     renderer: &mut FontRenderer,
     icons: &mut IconCache,
     view: View<'_>,
+) -> Result<(), String> {
+    draw_palette_at(canvas, width, height, renderer, icons, view, Instant::now())
+}
+
+fn draw_palette_at(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    renderer: &mut FontRenderer,
+    icons: &mut IconCache,
+    view: View<'_>,
+    now: Instant,
 ) -> Result<(), String> {
     let config = view.config;
     let ui = &config.ui;
@@ -675,7 +794,6 @@ pub fn draw_palette(
             &mut renderer.text,
         )
         .map_err(|e| e.to_string())?;
-    renderer.snapshot = Some(prepared.clone());
     renderer.rows.clear();
     for (index, result) in view.results.iter().enumerate() {
         if let Some(rect) = prepared.rects.get(&format!("row-{index}")) {
@@ -692,6 +810,8 @@ pub fn draw_palette(
     // Presentation overrides retain Lift's connected chrome and configurable caret.
     // Rasterization and clipping still run exclusively through the toolkit surface.
     let mut prepared: PreparedView = prepared.clone();
+    renderer.animate_hover(&mut prepared, view, now);
+    renderer.snapshot = Some(prepared.clone());
     prepared.items.retain_mut(|item| {
         if let PaintItem::Card {
             key,
@@ -870,6 +990,270 @@ mod tests {
                 assert_eq!(button.label.as_ref(), Some(&result.title));
             }
         }
+    }
+
+    #[test]
+    fn hovered_overflow_scrolls_in_place_and_survives_live_title_changes() {
+        let mut results = error_test_results();
+        for (index, result) in results.iter_mut().enumerate() {
+            result.action = LiftAction::LaunchApp {
+                app_id: format!("editor-{index}"),
+            };
+        }
+        results[1].kind = LiftResultKind::Node;
+        results[1].action = LiftAction::FocusNode { id: 7 };
+        results[1].title = format!(
+            "⠋ Claude {}",
+            "Long project title with more details ".repeat(3)
+        );
+        results[1].subtitle =
+            Some("A lengthy description with information beyond the visible row. ".repeat(3));
+        let mut config = LiftConfig {
+            show_section_labels: false,
+            ..Default::default()
+        };
+        let input = ModeInputState {
+            mode: LiftMode::Nodes,
+            query: "node".into(),
+        };
+        let draft = ClusterDraft::default();
+        macro_rules! make_view {
+            ($results:expr) => {
+                View {
+                    config: &config,
+                    input: &input,
+                    mode: LiftMode::Nodes,
+                    results: $results,
+                    selected: 1,
+                    scroll_offset: 0,
+                    draft: &draft,
+                    status: None,
+                    cursor_visible: false,
+                }
+            };
+        }
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        let mut icons = IconCache::new(&config);
+        let width = 420;
+        let height = surface_height(make_view!(&results)) as u32;
+        let mut pixels = vec![0; (width * height * 4) as usize];
+        let start = Instant::now();
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            start,
+        )
+        .unwrap();
+        let resting = renderer.snapshot.as_ref().unwrap().clone();
+        let resting_pixels = pixels.clone();
+        assert!(renderer.animation_timeout(start).is_none());
+        let hovered = resting.rects["row-1"];
+        renderer.pointer(InputEvent::PointerMove {
+            position: Point::new(hovered.origin.x + 2.0, hovered.origin.y + 2.0),
+        });
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            start,
+        )
+        .unwrap();
+        assert_eq!(
+            renderer.animation_timeout(start),
+            Some(Duration::from_millis(config.ui.hover_scroll_delay_ms))
+        );
+        let paused = start + Duration::from_millis(500);
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            paused,
+        )
+        .unwrap();
+        assert!(
+            !renderer.snapshot.as_ref().unwrap().items.iter().any(
+                |item| matches!(item, PaintItem::Text { key, .. } if key.ends_with("/marquee"))
+            )
+        );
+        let moving = start + Duration::from_millis(2500);
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            moving,
+        )
+        .unwrap();
+        let animated = renderer.snapshot.as_ref().unwrap().clone();
+        let mut moving_clips = Vec::new();
+        let mut title_offset = 0.0;
+        for (prefix, full) in [
+            ("title", results[1].title.as_str()),
+            ("subtitle", results[1].subtitle.as_deref().unwrap()),
+        ] {
+            let suffix = format!("/{prefix}-1/marquee");
+            let PaintItem::Text {
+                rect, clip, text, ..
+            } = animated
+                .items
+                .iter()
+                .find(|item| matches!(item, PaintItem::Text { key, .. } if key.ends_with(&suffix)))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            assert_eq!(text, full);
+            assert!(rect.origin.x < clip.origin.x);
+            assert!(rect.size.width > clip.size.width);
+            moving_clips.push(*clip);
+            if prefix == "title" {
+                title_offset = clip.origin.x - rect.origin.x;
+            }
+        }
+        for key in ["row-0", "row-1", "row-2", "icon-slot-1", "hint-1", "query"] {
+            assert_eq!(resting.rects[key], animated.rects[key]);
+        }
+        // Animation is clipped to the two text lines, leaving icons, shortcut
+        // hints, other entries and search pixels unchanged.
+        for y in 0..height {
+            for x in 0..width {
+                if moving_clips
+                    .iter()
+                    .any(|clip| clip.contains(Point::new(x as f32 + 0.5, y as f32 + 0.5)))
+                {
+                    continue;
+                }
+                let offset = ((y * width + x) * 4) as usize;
+                assert_eq!(
+                    &pixels[offset..offset + 4],
+                    &resting_pixels[offset..offset + 4]
+                );
+            }
+        }
+        results[1].title = results[1].title.replacen('⠋', "⠙", 1);
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            moving,
+        )
+        .unwrap();
+        let PaintItem::Text { text, rect, clip, .. } = renderer.snapshot.as_ref().unwrap().items.iter().find(|item| matches!(item, PaintItem::Text { key, .. } if key.ends_with("/title-1/marquee"))).unwrap() else { unreachable!() };
+        assert_eq!(text, &results[1].title);
+        assert!((clip.origin.x - rect.origin.x - title_offset).abs() < 0.1);
+        assert!(renderer.result_is_current(1, &results));
+        assert_eq!(
+            renderer
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .semantics
+                .iter()
+                .find(|node| node.key == "open-1")
+                .unwrap()
+                .label
+                .as_ref(),
+            Some(&results[1].title)
+        );
+        let frame_start = Instant::now();
+        let mut previous_offset = title_offset;
+        for frame in 1..=60 {
+            let frame_at = moving + Duration::from_millis(frame * 16);
+            draw_palette_at(
+                &mut pixels,
+                width,
+                height,
+                &mut renderer,
+                &mut icons,
+                make_view!(&results),
+                frame_at,
+            )
+            .unwrap();
+            let PaintItem::Text { rect, clip, .. } = renderer.snapshot.as_ref().unwrap().items.iter().find(|item| matches!(item, PaintItem::Text { key, .. } if key.ends_with("/title-1/marquee"))).unwrap() else { unreachable!() };
+            let offset = clip.origin.x - rect.origin.x;
+            assert!(offset >= previous_offset);
+            assert!(offset - previous_offset <= config.ui.hover_scroll_speed as f32 * 0.016 + 0.01);
+            previous_offset = offset;
+        }
+        eprintln!(
+            "60 hover-scroll frames rendered in {:?}",
+            frame_start.elapsed()
+        );
+        let moving = moving + Duration::from_millis(60 * 16);
+        renderer.pointer(InputEvent::PointerCancel);
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            moving,
+        )
+        .unwrap();
+        let faded = moving + Duration::from_millis(config.ui.hover_scroll_transition_ms);
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            faded,
+        )
+        .unwrap();
+        assert!(renderer.animation_timeout(faded).is_none());
+        config.ui.hover_scroll = false;
+        renderer.pointer(InputEvent::PointerMove {
+            position: Point::new(hovered.origin.x + 2.0, hovered.origin.y + 2.0),
+        });
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            faded,
+        )
+        .unwrap();
+        assert!(renderer.animation_timeout(faded).is_none());
+        assert!(
+            !renderer.snapshot.as_ref().unwrap().items.iter().any(
+                |item| matches!(item, PaintItem::Text { key, .. } if key.ends_with("/marquee"))
+            )
+        );
+        let short = resting.rects["row-0"];
+        config.ui.hover_scroll = true;
+        renderer.pointer(InputEvent::PointerMove {
+            position: Point::new(short.origin.x + 2.0, short.origin.y + 2.0),
+        });
+        draw_palette_at(
+            &mut pixels,
+            width,
+            height,
+            &mut renderer,
+            &mut icons,
+            make_view!(&results),
+            faded,
+        )
+        .unwrap();
+        assert!(renderer.animation_timeout(faded).is_none());
     }
 
     #[test]

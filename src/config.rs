@@ -123,6 +123,11 @@ pub struct LiftUiConfig {
     pub marker_size: i32,
     pub draft_padding: i32,
     pub status_padding: i32,
+    pub hover_scroll: bool,
+    pub hover_scroll_delay_ms: u64,
+    pub hover_scroll_speed: u32,
+    pub hover_scroll_pause_ms: u64,
+    pub hover_scroll_transition_ms: u64,
     pub search_height: i32,
     pub draft_height: i32,
     pub row_height: i32,
@@ -273,6 +278,11 @@ impl Default for LiftUiConfig {
             marker_size: 18,
             draft_padding: 14,
             status_padding: 3,
+            hover_scroll: true,
+            hover_scroll_delay_ms: 900,
+            hover_scroll_speed: 30,
+            hover_scroll_pause_ms: 1200,
+            hover_scroll_transition_ms: 180,
             search_height: 60,
             draft_height: 36,
             row_height: 64,
@@ -465,6 +475,28 @@ impl LiftConfig {
         out.ui.status_padding = cfg
             .get_or("lift.ui.status-padding", out.ui.status_padding)
             .clamp(0, 16);
+        out.ui.hover_scroll = cfg.get_or("lift.ui.hover-scroll", out.ui.hover_scroll);
+        out.ui.hover_scroll_delay_ms = cfg
+            .get_or(
+                "lift.ui.hover-scroll-delay-ms",
+                out.ui.hover_scroll_delay_ms,
+            )
+            .clamp(0, 5000);
+        out.ui.hover_scroll_speed = cfg
+            .get_or("lift.ui.hover-scroll-speed", out.ui.hover_scroll_speed)
+            .clamp(8, 160);
+        out.ui.hover_scroll_pause_ms = cfg
+            .get_or(
+                "lift.ui.hover-scroll-pause-ms",
+                out.ui.hover_scroll_pause_ms,
+            )
+            .clamp(0, 5000);
+        out.ui.hover_scroll_transition_ms = cfg
+            .get_or(
+                "lift.ui.hover-scroll-transition-ms",
+                out.ui.hover_scroll_transition_ms,
+            )
+            .clamp(50, 600);
         out.ui.section_height = cfg
             .get_or("lift.ui.section-height", out.ui.section_height)
             .clamp(0, 40);
@@ -717,6 +749,16 @@ end
     }
 
     #[test]
+    fn hover_scroll_settings_parse_and_bound_animation_timing() {
+        let config = load_text("lift:\n  ui:\n    hover-scroll false\n    hover-scroll-delay-ms 99999\n    hover-scroll-speed 0\n    hover-scroll-pause-ms 0\n    hover-scroll-transition-ms 0\n  end\nend\n").unwrap();
+        assert!(!config.ui.hover_scroll);
+        assert_eq!(config.ui.hover_scroll_delay_ms, 5000);
+        assert_eq!(config.ui.hover_scroll_speed, 8);
+        assert_eq!(config.ui.hover_scroll_pause_ms, 0);
+        assert_eq!(config.ui.hover_scroll_transition_ms, 50);
+    }
+
+    #[test]
     fn documented_templates_keep_default_settings() {
         for text in [
             DEFAULT_CONFIG_TEMPLATE,
@@ -734,6 +776,20 @@ end
             assert_eq!(config.ui.marker_size, defaults.marker_size);
             assert_eq!(config.ui.draft_padding, defaults.draft_padding);
             assert_eq!(config.ui.status_padding, defaults.status_padding);
+            assert_eq!(config.ui.hover_scroll, defaults.hover_scroll);
+            assert_eq!(
+                config.ui.hover_scroll_delay_ms,
+                defaults.hover_scroll_delay_ms
+            );
+            assert_eq!(config.ui.hover_scroll_speed, defaults.hover_scroll_speed);
+            assert_eq!(
+                config.ui.hover_scroll_pause_ms,
+                defaults.hover_scroll_pause_ms
+            );
+            assert_eq!(
+                config.ui.hover_scroll_transition_ms,
+                defaults.hover_scroll_transition_ms
+            );
             assert_eq!(config.providers, LiftConfig::default().providers);
             for mode in [
                 LiftMode::Apps,
