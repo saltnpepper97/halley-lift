@@ -720,7 +720,7 @@ pub fn draw_palette(
             key: "search-divider".into(),
             rect: UiRect::new(
                 search_rect.origin.x + inset,
-                search_rect.origin.y + search_rect.size.height,
+                (search_rect.origin.y + search_rect.size.height).round(),
                 (search_rect.size.width - inset * 2.0).max(0.0),
                 1.0,
             ),
@@ -813,19 +813,21 @@ mod tests {
             } else {
                 0
             };
+            let search_rect = renderer.snapshot.as_ref().unwrap().rects["search-chrome"];
+            let seam_y = (search_rect.origin.y + search_rect.size.height).round() as u32;
             if visible {
                 assert_eq!(changed.len(), (width - inset * 2) as usize);
             }
             for (index, _) in changed {
                 let x = index as u32 % width;
-                assert_eq!(index as u32 / width, config.ui.search_height as u32);
+                assert_eq!(index as u32 / width, seam_y);
                 assert!(
                     x >= inset && x < width - inset,
                     "divider must preserve border edges"
                 );
             }
             if visible {
-                let index = ((config.ui.search_height as u32 * width + width / 2) * 4) as usize;
+                let index = ((seam_y * width + width / 2) * 4) as usize;
                 let pixel = &captures[1][index..index + 4];
                 // The toolkit antialiases a 1px card; its configured pink tint
                 // must remain visible after compositing over the dropdown.
