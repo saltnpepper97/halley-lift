@@ -8,6 +8,7 @@ mod activation;
 mod blur;
 mod config;
 mod desktop_exec;
+mod hover_scroll;
 mod icons;
 mod instance;
 mod live;
@@ -294,6 +295,9 @@ fn run() -> Result<(), String> {
             return Err(format!("event dispatch: {err}"));
         }
         app.poll_cursor_blink();
+        if app.font.animation_due(Instant::now()) {
+            app.mark_redraw();
+        }
         app.flush_redraw();
     }
     Ok(())
@@ -556,6 +560,7 @@ fn wheel_position(
 
 impl LiftApp {
     fn refresh_results(&mut self) {
+        let selected_action = self.selected_result().map(|result| result.action.clone());
         let start = Instant::now();
         let (mode, query) = self.effective_search();
         self.ensure_live_snapshot();
@@ -567,9 +572,13 @@ impl LiftApp {
             draft_count: self.draft.count(),
         };
         self.results = self.index.search(&ctx);
-        if self.selected >= self.results.len() {
-            self.selected = self.results.len().saturating_sub(1);
-        }
+        self.selected = selected_action
+            .and_then(|action| {
+                self.results
+                    .iter()
+                    .position(|result| result.action == action)
+            })
+            .unwrap_or_else(|| self.selected.min(self.results.len().saturating_sub(1)));
         self.keep_selection_visible();
         perf(format_args!(
             "search mode={:?} query_len={} results={} elapsed={:.2?}",
@@ -584,6 +593,7 @@ impl LiftApp {
     /// snaps back to the first entry; a stationary cursor emits no motion event, so
     /// it only moves again once the mouse is physically dragged over another row.
     fn refresh_results_typed(&mut self) {
+        self.font.reset_scroll();
         self.status = None;
         self.refresh_results();
         self.selected = 0;
@@ -938,7 +948,17 @@ impl LiftApp {
     }
 
     fn dispatch_timeout(&self) -> Option<Duration> {
-        self.cursor_poll_interval()
+        // An expired animation deadline must not spin the loop while Wayland
+        // is holding a frame or a resize. Those callbacks will wake us instead.
+        let animation = if self.configured && !self.frame_pending && !self.size_request.pending {
+            self.font.animation_timeout(Instant::now())
+        } else {
+            None
+        };
+        match (self.cursor_poll_interval(), animation) {
+            (Some(cursor), Some(animation)) => Some(cursor.min(animation)),
+            (cursor, animation) => cursor.or(animation),
+        }
     }
 
     fn cursor_poll_interval(&self) -> Option<Duration> {
@@ -1425,6 +1445,13 @@ impl PointerHandler for LiftApp {
                     }
                 }
                 PointerEventKind::Enter { .. } => {
+                    self.font
+                        .pointer(halley_ui::input::InputEvent::PointerMove {
+                            position: halley_ui::Point::new(
+                                event.position.0 as f32,
+                                event.position.1 as f32,
+                            ),
+                        });
                     if self.selection_authority.enter_can_hover()
                         && let Some(index) = result_index_at(
                             &self.font,
