@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Use matching 12px search, panel, and dropdown corner radii in the built-in
+  defaults, first-run configuration, and examples, so expanded results and
+  "No results" have the same outer rounding at the top and bottom.
 - Allow Space to stage or unstage the selected app or running node in cluster
   mode with an empty search, without adding query text or launching the target.
 - Limit Alt-number activation to the ten shortcut hints on painted, visible
