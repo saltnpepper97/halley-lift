@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Keep application-provided animated node titles live when subscriptions are
+  unavailable or incompatible, using a persistent 100ms polling fallback that
+  repaints only changed snapshots. Retain the selected target across live updates.
+- Gently reveal ellipsized result titles and descriptions on hover, with a
+  configurable delay, speed, endpoint pause, and fade/ease timing. Keep icons,
+  hints, layout, accessibility names, and activation targets fixed; preserve
+  hover progress across live title changes and fade back when leaving or typing.
 - Remove unused selection-marker space outside cluster search, bringing result
   icons closer to the left edge. Make results and row insets, content and text
   gaps, cluster marker size, search gap, draft inset, bottom gap, and error-text

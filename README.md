@@ -279,6 +279,11 @@ lift:
     draft-padding 14
     results-bottom-gap 8
     status-padding 3
+    hover-scroll true
+    hover-scroll-delay-ms 900
+    hover-scroll-speed 30
+    hover-scroll-pause-ms 1200
+    hover-scroll-transition-ms 180
     dropdown-gap 0
     dropdown-padding 10
     search-height 60
@@ -314,6 +319,22 @@ cluster marker (8–32px). `search-gap`, `draft-padding`, `results-bottom-gap`, 
 `status-padding` control their named spacing. All padding and gap settings accept
 zero. An omitted `results-bottom-gap` retains the previous `max(row-gap, 8)`
 behavior. These settings apply on the next Lift invocation.
+
+Hovering a truncated result reveals its full title and description inside their
+existing text areas. By default, Lift waits 900ms, fades in the full text, scrolls
+at 30 pixels per second with eased starts and stops, pauses at the end for
+1200ms, then returns smoothly. Leaving or using the keyboard fades back to the
+ellipsis; icons and shortcut hints remain fixed. Text that fits does not scroll.
+Set `ui.hover-scroll false` to disable this. Adjust `hover-scroll-delay-ms`,
+`hover-scroll-speed`, `hover-scroll-pause-ms`, and `hover-scroll-transition-ms`
+to tune it. Live title changes retain hover progress for the same node.
+
+Running-node titles follow the application's actual title updates, including
+activity spinners. Lift prefers compositor subscriptions; if unavailable or
+incompatible, it refreshes through the existing query connection every 100ms
+and repaints only changed snapshots. Connection failures retain the last good
+state and retry with the existing backoff. Selection follows the same target
+when live updates reorder results.
 
 `colors.divider` controls the 1px line between the search box and its connected
 dropdown, including "No results" and action errors. Set it to `"#00000000"` to
