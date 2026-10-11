@@ -707,6 +707,75 @@ mod tests {
     }
 
     #[test]
+    fn panel_color_fills_inherited_regions_without_compositing_under_explicit_colors() {
+        let mut config = LiftConfig::default();
+        config.border.enabled = false;
+        config.rounding.search = 0;
+        config.rounding.panel = 0;
+        config.rounding.dropdown = 0;
+        config.colors.panel = "#164b80dd".into();
+        let input = ModeInputState {
+            query: "nothing matches".into(),
+            ..Default::default()
+        };
+        let draft = ClusterDraft::default();
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        for (search, dropdown) in [("", ""), ("invalid", "invalid"), ("#ffffff80", "#10101040")] {
+            config.colors.search = search.into();
+            config.colors.dropdown = dropdown.into();
+            let mut icons = IconCache::new(&config);
+            let view = View {
+                config: &config,
+                input: &input,
+                mode: LiftMode::General,
+                results: &[],
+                selected: 0,
+                scroll_offset: 0,
+                draft: &draft,
+                status: None,
+                cursor_visible: false,
+            };
+            let height = surface_height(view) as u32;
+            let mut pixels = vec![0; (config.width * height * 4) as usize];
+            draw_palette(
+                &mut pixels,
+                config.width,
+                height,
+                &mut renderer,
+                &mut icons,
+                view,
+            )
+            .unwrap();
+            let prepared = renderer.snapshot.as_ref().unwrap();
+            for (key, raw, x, y) in [
+                ("search-chrome", search, 2, 2),
+                (
+                    "dropdown-chrome",
+                    dropdown,
+                    2,
+                    config.ui.search_height as u32 + 2,
+                ),
+            ] {
+                let fallback = color(&config.colors.panel, transparent());
+                let expected = color(raw, fallback);
+                let item = prepared.items.iter().find(|item| {
+                    matches!(item, PaintItem::Card { key: item_key, .. } if item_key.ends_with(key))
+                }).unwrap();
+                let PaintItem::Card { style, .. } = item else {
+                    unreachable!()
+                };
+                assert_eq!(style.fill, expected);
+                let alpha = pixels[((y * config.width + x) * 4 + 3) as usize];
+                assert_eq!(
+                    alpha,
+                    (expected.a * 255.0).round() as u8,
+                    "explicit alpha must not include a second panel layer"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn empty_query_error_is_painted_without_footer_or_unrequested_results() {
         let config = LiftConfig::default();
         assert_eq!(config.ui.footer_height, 0);

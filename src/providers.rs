@@ -1171,6 +1171,147 @@ mod api_tests {
 mod tests {
     use super::*;
 
+    fn context(mode: LiftMode, query: &str) -> SearchContext {
+        SearchContext {
+            mode,
+            query: query.into(),
+            query_lower: query.to_ascii_lowercase(),
+            max_results: 40,
+            draft_count: 0,
+        }
+    }
+
+    #[test]
+    fn fuzzy_setting_applies_to_every_search_provider() {
+        let mut index = provider_index_with_every_provider();
+        for (mode, scattered, contiguous) in [
+            (LiftMode::Apps, "kty", "kitty"),
+            (LiftMode::Nodes, "ntxt", "editor"),
+            (LiftMode::Clusters, "rls", "release"),
+            (LiftMode::Actions, "rld", "reload"),
+            (LiftMode::Config, "lftcfg", "lift"),
+        ] {
+            index.policy.fuzzy = true;
+            assert!(
+                !index.search(&context(mode, scattered)).is_empty(),
+                "{mode:?} must support scattered letters"
+            );
+            index.policy.fuzzy = false;
+            assert!(
+                index.search(&context(mode, scattered)).is_empty(),
+                "{mode:?} must honor fuzzy false"
+            );
+            assert!(
+                !index.search(&context(mode, contiguous)).is_empty(),
+                "{mode:?} must retain contiguous matches"
+            );
+        }
+        assert_eq!(
+            match_score("kitty", "kitty", true),
+            match_score("kitty", "kitty", false)
+        );
+        assert_eq!(
+            match_score("kit", "kitty", true),
+            match_score("kit", "kitty", false)
+        );
+    }
+
+    #[test]
+    fn general_provider_list_does_not_disable_explicit_modes_or_cluster_staging() {
+        let mut index = provider_index_with_every_provider();
+        for (name, kind) in [
+            ("apps", LiftResultKind::App),
+            ("nodes", LiftResultKind::Node),
+            ("clusters", LiftResultKind::Cluster),
+            ("actions", LiftResultKind::Action),
+            ("config", LiftResultKind::Config),
+        ] {
+            index.policy.providers = vec![name.into()];
+            let results = index.search(&context(LiftMode::General, ""));
+            assert!(!results.is_empty());
+            assert!(results.iter().all(|result| result.kind == kind));
+        }
+        index.policy.providers.clear();
+        assert!(index.search(&context(LiftMode::General, "")).is_empty());
+        for mode in [
+            LiftMode::Apps,
+            LiftMode::Nodes,
+            LiftMode::Actions,
+            LiftMode::Config,
+            LiftMode::Term,
+        ] {
+            assert!(
+                !index.search(&context(mode, "")).is_empty(),
+                "{mode:?} must remain reachable"
+            );
+        }
+        let results = index.search(&context(LiftMode::Clusters, ""));
+        for kind in [
+            LiftResultKind::App,
+            LiftResultKind::Node,
+            LiftResultKind::Cluster,
+        ] {
+            assert!(results.iter().any(|result| result.kind == kind));
+        }
+    }
+
+    #[test]
+    fn mode_flags_disable_prefix_results_without_disabling_general_providers() {
+        for (mode, kind) in [
+            (LiftMode::Apps, LiftResultKind::App),
+            (LiftMode::Nodes, LiftResultKind::Node),
+            (LiftMode::Clusters, LiftResultKind::Cluster),
+            (LiftMode::Actions, LiftResultKind::Action),
+            (LiftMode::Config, LiftResultKind::Config),
+        ] {
+            let mut index = provider_index_with_every_provider();
+            let flag = match mode {
+                LiftMode::Apps => &mut index.policy.modes.apps,
+                LiftMode::Nodes => &mut index.policy.modes.nodes,
+                LiftMode::Clusters => &mut index.policy.modes.clusters,
+                LiftMode::Actions => &mut index.policy.modes.actions,
+                LiftMode::Config => &mut index.policy.modes.config,
+                _ => unreachable!(),
+            };
+            *flag = false;
+            let mut ctx = context(mode, "");
+            ctx.draft_count = 1;
+            assert!(index.search(&ctx).is_empty(), "{mode:?} must be disabled");
+            assert!(
+                index
+                    .search(&context(LiftMode::General, ""))
+                    .iter()
+                    .any(|result| result.kind == kind)
+            );
+        }
+    }
+
+    #[test]
+    fn default_config_omits_general_config_results_but_keeps_the_prefix() {
+        let mut index = provider_index_with_every_provider();
+        index.policy = SearchPolicy::default();
+        assert!(
+            index
+                .search(&context(LiftMode::General, "config"))
+                .iter()
+                .all(|result| result.kind != LiftResultKind::Config)
+        );
+        assert_eq!(index.search(&context(LiftMode::Config, "")).len(), 2);
+    }
+
+    #[test]
+    fn disabled_live_providers_skip_api_work_but_cluster_staging_still_needs_nodes() {
+        let mut index = provider_index_with_every_provider();
+        index.policy.providers.clear();
+        index.policy.modes.nodes = false;
+        index.policy.modes.clusters = false;
+        assert!(!index.needs_live_refresh());
+        index.start_live_refresh();
+        assert!(index.live_updates.is_none());
+        index.policy.modes.clusters = true;
+        assert!(index.needs_live_refresh());
+    }
+
     #[test]
     fn terminal_shell_invocation_keeps_shell_open_after_command() {
         assert_eq!(

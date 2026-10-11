@@ -575,3 +575,83 @@ fn absolutize_path(path: &str) -> PathBuf {
             .unwrap_or(path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn load_text(text: &str) -> Result<LiftConfig, String> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "lift-config-{}-{}.rune",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, text).unwrap();
+        let result = LiftConfig::load(&path);
+        std::fs::remove_file(path).unwrap();
+        result
+    }
+
+    #[test]
+    fn settings_parse_and_empty_providers_do_not_restore_defaults() {
+        let config = load_text(
+            r##"
+lift:
+  fuzzy false
+  providers []
+  modes:
+    nodes false
+    clusters false
+  end
+  colors:
+    panel "#164b80dd"
+    search ""
+    dropdown ""
+  end
+end
+"##,
+        )
+        .unwrap();
+        assert!(!config.fuzzy);
+        assert!(config.providers.is_empty());
+        assert!(!config.modes.nodes);
+        assert!(!config.modes.clusters);
+        assert!(config.modes.apps);
+        assert_eq!(config.colors.panel, "#164b80dd");
+        assert!(config.colors.search.is_empty());
+        assert!(config.colors.dropdown.is_empty());
+    }
+
+    #[test]
+    fn invalid_provider_names_and_types_are_reported() {
+        let error = load_text("lift:\n  providers [\"apps\" \"typo\"]\nend\n").unwrap_err();
+        assert!(error.contains("unknown lift.providers entry"));
+        assert!(error.contains("typo"));
+        let error = load_text("lift:\n  providers 42\nend\n").unwrap_err();
+        assert!(error.contains("lift.providers"));
+    }
+
+    #[test]
+    fn documented_templates_keep_default_settings() {
+        for text in [
+            DEFAULT_CONFIG_TEMPLATE,
+            include_str!("../examples/lift.rune"),
+        ] {
+            let config = load_text(text).unwrap();
+            assert!(config.fuzzy);
+            assert_eq!(config.providers, LiftConfig::default().providers);
+            for mode in [
+                LiftMode::Apps,
+                LiftMode::Nodes,
+                LiftMode::Clusters,
+                LiftMode::Actions,
+                LiftMode::Config,
+                LiftMode::Term,
+            ] {
+                assert!(config.modes.enabled(mode));
+            }
+        }
+    }
+}
