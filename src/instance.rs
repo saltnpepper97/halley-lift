@@ -140,3 +140,219 @@ fn acquire_at(path: &Path) -> Result<Option<(InstanceGuard, UnixListener)>, Stri
         path.display()
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    };
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "lift-instance-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn socket(&self) -> PathBuf {
+            self.0.join("lift.sock")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn normal_shutdown_removes_its_socket_and_releases_the_stable_lock() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        let (guard, listener) = acquire_at(&path).unwrap().unwrap();
+        assert!(acquire_at(&path).unwrap().is_none());
+        assert!(listener.accept().is_ok());
+        drop(listener);
+        drop(guard);
+        assert!(!path.exists());
+        assert!(path.with_extension("lock").exists());
+        assert!(acquire_at(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn old_guard_does_not_unlink_a_replacement_listener() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        let (guard, _old_listener) = acquire_at(&path).unwrap().unwrap();
+        fs::remove_file(&path).unwrap();
+        let replacement = UnixListener::bind(&path).unwrap();
+        replacement.set_nonblocking(true).unwrap();
+        drop(guard);
+        let _client = UnixStream::connect(&path).unwrap();
+        assert!(replacement.accept().is_ok());
+    }
+
+    #[test]
+    fn old_guard_preserves_a_replacement_regular_file() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        let (guard, _listener) = acquire_at(&path).unwrap().unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, "replacement").unwrap();
+        drop(guard);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
+    }
+
+    #[test]
+    fn stale_socket_is_recovered_but_a_regular_file_is_not_removed() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        drop(UnixListener::bind(&path).unwrap());
+        let (guard, listener) = acquire_at(&path).unwrap().unwrap();
+        let _client = UnixStream::connect(&path).unwrap();
+        assert!(listener.accept().is_ok());
+        drop(listener);
+        drop(guard);
+        fs::write(&path, "keep me").unwrap();
+        assert!(acquire_at(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn live_legacy_listener_is_toggled_and_preserved() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        let legacy = UnixListener::bind(&path).unwrap();
+        legacy.set_nonblocking(true).unwrap();
+        assert!(acquire_at(&path).unwrap().is_none());
+        assert!(legacy.accept().is_ok());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn concurrent_starts_create_one_owner_and_one_toggle() {
+        let scratch = Scratch::new();
+        let barrier = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let path = scratch.socket();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    acquire_at(&path).unwrap()
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_some()).count(), 1);
+        let owner = results.into_iter().flatten().next().unwrap();
+        assert!(owner.1.accept().is_ok());
+    }
+
+    #[test]
+    fn startup_with_lock_before_bind_does_not_reclaim_the_owners_path() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        let lock = File::create(path.with_extension("lock")).unwrap();
+        lock.lock().unwrap();
+        let (done, result) = mpsc::channel();
+        let contender_path = path.clone();
+        let contender = thread::spawn(move || {
+            done.send(acquire_at(&contender_path).unwrap().is_none())
+                .unwrap();
+        });
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert!(result.recv_timeout(Duration::from_secs(2)).unwrap());
+        contender.join().unwrap();
+        assert!(listener.accept().is_ok());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn shutdown_with_closed_listener_waits_for_the_guard_before_takeover() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        let (guard, listener) = acquire_at(&path).unwrap().unwrap();
+        drop(listener);
+        let (done, result) = mpsc::channel();
+        let contender_path = path.clone();
+        let contender = thread::spawn(move || {
+            done.send(acquire_at(&contender_path)).unwrap();
+        });
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(path.exists());
+        drop(guard);
+        let (_new_guard, listener) = result
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        contender.join().unwrap();
+        let _client = UnixStream::connect(&path).unwrap();
+        assert!(listener.accept().is_ok());
+    }
+
+    #[test]
+    #[ignore = "subprocess helper for crash recovery"]
+    fn crashed_owner_child() {
+        let path = PathBuf::from(std::env::var_os("HALLEY_LIFT_INSTANCE_TEST_SOCKET").unwrap());
+        let (_guard, _listener) = acquire_at(&path).unwrap().unwrap();
+        fs::write(path.with_extension("ready"), "ready").unwrap();
+        loop {
+            thread::park();
+        }
+    }
+
+    #[test]
+    fn killed_owner_releases_its_lock_and_leaves_a_recoverable_socket() {
+        let scratch = Scratch::new();
+        let path = scratch.socket();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "instance::tests::crashed_owner_child",
+            ])
+            .env("HALLEY_LIFT_INSTANCE_TEST_SOCKET", &path)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !path.with_extension("ready").exists() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("child did not acquire the socket");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(path.exists());
+        let (_guard, listener) = acquire_at(&path).unwrap().unwrap();
+        let _client = UnixStream::connect(&path).unwrap();
+        assert!(listener.accept().is_ok());
+    }
+}
