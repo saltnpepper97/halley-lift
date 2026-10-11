@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove unused selection-marker space outside cluster search, bringing result
+  icons closer to the left edge. Make results and row insets, content and text
+  gaps, cluster marker size, search gap, draft inset, bottom gap, and error-text
+  padding configurable. Allow zero padding and gaps; retain inherited results
+  spacing for existing configs. Document the settings in defaults and examples.
 - Dismiss on Escape release after consuming its complete press/release pair,
   so the window regaining focus does not inherit a held Escape and leave
   browser video fullscreen. Handle focus and keyboard removal during dismissal.

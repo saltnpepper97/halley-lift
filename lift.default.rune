@@ -72,6 +72,15 @@ lift:
   ui:
     top-margin 96
     padding 20
+    search-gap 12                  # Space between search glyph and text.
+    results-padding 20             # Horizontal inset of the results body.
+    row-padding 5                  # Horizontal inset inside each result row.
+    row-content-gap 16             # Space between marker, icon, text and hint.
+    row-text-gap 7                 # Space between title and description.
+    marker-size 18                 # Cluster selection marker, shown only in cluster mode.
+    draft-padding 14               # Horizontal inset inside the cluster draft.
+    results-bottom-gap 8           # Space below the last result.
+    status-padding 3               # Vertical space on each side of error text.
     dropdown-gap 0
     dropdown-padding 10
     search-height 60

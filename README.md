@@ -270,6 +270,15 @@ lift:
   ui:
     top-margin 96
     padding 20
+    search-gap 12
+    results-padding 20
+    row-padding 5
+    row-content-gap 16
+    row-text-gap 7
+    marker-size 18
+    draft-padding 14
+    results-bottom-gap 8
+    status-padding 3
     dropdown-gap 0
     dropdown-padding 10
     search-height 60
@@ -292,6 +301,19 @@ full result set.
 
 Long result names and descriptions end with an ellipsis so icons and shortcut
 hints stay aligned. Accessible result names retain the full title.
+
+Selection markers reserve space only in cluster search. Normal results start
+at `ui.results-padding + ui.row-padding` from the panel's left edge, so unused
+marker space no longer pushes icons inward. `ui.padding` controls the search
+inset; `ui.results-padding` independently controls the results inset. If omitted
+from an existing config, `results-padding` inherits `padding`.
+
+`row-content-gap` separates the marker, icon, text, and shortcut hint;
+`row-text-gap` separates the title and description. `marker-size` controls the
+cluster marker (8–32px). `search-gap`, `draft-padding`, `results-bottom-gap`, and
+`status-padding` control their named spacing. All padding and gap settings accept
+zero. An omitted `results-bottom-gap` retains the previous `max(row-gap, 8)`
+behavior. These settings apply on the next Lift invocation.
 
 `colors.divider` controls the 1px line between the search box and its connected
 dropdown, including "No results" and action errors. Set it to `"#00000000"` to
