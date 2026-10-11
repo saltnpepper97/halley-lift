@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Serialize single-instance socket ownership through startup and shutdown, and
+  only remove the socket owned by the exiting instance. Recover stale sockets
+  after crashes without deleting replacement sockets or unrelated files.
 - Keep compositor connection setup out of joined startup work and run action
   requests off the UI thread. Give handshake/action connections two-second
   read/write timeouts and ignore repeat activation while an action is pending.

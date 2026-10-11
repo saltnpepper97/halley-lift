@@ -55,6 +55,11 @@ background with two-second socket read/write timeouts, keeping search and Escape
 responsive if the API stops replying. Repeated activation is ignored while an
 action is pending; successful activation closes Lift as usual.
 
+Launching Lift again closes the existing instance. Coordination uses
+`$XDG_RUNTIME_DIR/halley/halley-lift.sock` and a `halley-lift.lock` file in the
+same directory. The lock file stays for the runtime session; the operating system
+releases its lock automatically when Lift exits or crashes.
+
 ## Launching From Halley
 
 A freshly generated Halley config binds `Mod+D` to `halley-lift`, so Lift is the
