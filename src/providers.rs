@@ -744,23 +744,48 @@ fn fuzzy_match(query: &str, haystack: &str) -> Option<f64> {
 }
 
 fn load_desktop_apps() -> Vec<DesktopApp> {
+    load_desktop_apps_from(&desktop_dirs())
+}
+
+fn load_desktop_apps_from(dirs: &[PathBuf]) -> Vec<DesktopApp> {
     let mut seen = HashSet::new();
     let mut apps = Vec::new();
-    for dir in desktop_dirs() {
-        walk_desktop_files(&dir, 3, &mut |path| {
-            if let Some(app) = parse_desktop_app(path)
-                && seen.insert(app.id.clone())
-            {
+    for dir in dirs {
+        let mut paths = Vec::new();
+        walk_desktop_files(dir, &mut paths);
+        // A flat and nested path can encode the same desktop-file ID. The
+        // standard leaves this collision undefined; make our choice stable.
+        paths.sort_unstable();
+        for path in paths {
+            let Some(id) = desktop_app_id(dir, &path) else {
+                continue;
+            };
+            if seen.contains(&id) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            // A readable higher-priority entry owns its ID even when Hidden,
+            // NoDisplay, or an invalid command keeps it out of the results.
+            seen.insert(id.clone());
+            if let Some(app) = parse_desktop_app(&path, &text, id) {
                 apps.push(app);
             }
-        });
+        }
     }
     apps.sort_by(|a, b| a.name.cmp(&b.name));
     apps
 }
 
-fn parse_desktop_app(path: &Path) -> Option<DesktopApp> {
-    let text = fs::read_to_string(path).ok()?;
+fn desktop_app_id(dir: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(dir).ok()?.to_str()?;
+    // Lift's existing app/cluster IDs omit .desktop. Flat IDs retain their
+    // spelling, while nested paths use the Desktop Entry slash-to-dash rule.
+    Some(relative.strip_suffix(".desktop")?.replace('/', "-"))
+}
+
+fn parse_desktop_app(path: &Path, text: &str, id: String) -> Option<DesktopApp> {
     let mut in_entry = false;
     let mut name = None;
     let mut comment = None;
@@ -807,7 +832,6 @@ fn parse_desktop_app(path: &Path) -> Option<DesktopApp> {
     if hidden || no_display {
         return None;
     }
-    let id = path.file_stem()?.to_string_lossy().into_owned();
     let name = name?;
     let exec = desktop_exec::parse(&exec?, &name, icon_name.as_deref(), path).ok()?;
     let search_text = format!(
@@ -833,29 +857,79 @@ fn parse_desktop_app(path: &Path) -> Option<DesktopApp> {
 }
 
 fn desktop_dirs() -> Vec<PathBuf> {
+    desktop_dirs_from(
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("XDG_DATA_DIRS").as_deref(),
+    )
+}
+
+fn desktop_dirs_from(
+    home: Option<&std::ffi::OsStr>,
+    data_home: Option<&std::ffi::OsStr>,
+    data_dirs: Option<&std::ffi::OsStr>,
+) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(Path::new(&home).join(".local/share/applications"));
+    let user_data = data_home
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            home.map(Path::new)
+                .filter(|path| path.is_absolute())
+                .map(|path| path.join(".local/share"))
+        });
+    if let Some(user_data) = user_data {
+        dirs.push(user_data.join("applications"));
     }
-    let data_dirs =
-        std::env::var_os("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    dirs.extend(std::env::split_paths(&data_dirs).map(|dir| dir.join("applications")));
+    let data_dirs = data_dirs
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| std::ffi::OsStr::new("/usr/local/share:/usr/share"));
+    dirs.extend(
+        std::env::split_paths(data_dirs)
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join("applications")),
+    );
+    let mut seen = HashSet::new();
+    dirs.retain(|dir| seen.insert(dir.clone()));
     dirs
 }
 
-fn walk_desktop_files(dir: &Path, depth: usize, f: &mut impl FnMut(&Path)) {
-    if depth == 0 {
-        return;
+fn walk_desktop_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    enum Task {
+        Visit(PathBuf),
+        Leave(PathBuf),
     }
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_desktop_files(&path, depth - 1, f);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("desktop") {
-            f(&path);
+    let mut pending = vec![Task::Visit(dir.to_path_buf())];
+    let mut ancestors = HashSet::new();
+    while let Some(task) = pending.pop() {
+        let path = match task {
+            Task::Leave(canonical) => {
+                ancestors.remove(&canonical);
+                continue;
+            }
+            Task::Visit(path) => path,
+        };
+        let Ok(canonical) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if ancestors.contains(&canonical) {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&path) else {
+            continue;
+        };
+        ancestors.insert(canonical.clone());
+        pending.push(Task::Leave(canonical));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(Task::Visit(path));
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("desktop")
+                && path.is_file()
+            {
+                files.push(path);
+            }
         }
     }
 }
@@ -1718,7 +1792,15 @@ exec '\''/bin/zsh'\'' -i'"#
             "[Desktop Entry]\nType=Application\nName=Éditor's $HOME %k\nIcon=test icon\nExec=/bin/sh \"{}\" \"two  spaces\" \"\" %c %k %i %% \"literal \\\\$HOME\"\n",
             probe.display()
         )).unwrap();
-        parse_desktop_app(&desktop).unwrap()
+        parse_app_file(&desktop).unwrap()
+    }
+
+    fn parse_app_file(path: &Path) -> Option<DesktopApp> {
+        parse_desktop_app(
+            path,
+            &fs::read_to_string(path).ok()?,
+            desktop_app_id(path.parent()?, path)?,
+        )
     }
 
     fn received_args(output: std::process::Output) -> Vec<String> {
@@ -1834,11 +1916,11 @@ exec '\''/bin/zsh'\'' -i'"#
             "[Desktop Entry]\nName=App\nStartupWMClass=fallback-icon\nExec=app %i %U\n",
         )
         .unwrap();
-        let app = parse_desktop_app(&path).unwrap();
+        let app = parse_app_file(&path).unwrap();
         assert_eq!(app.icon_name.as_deref(), Some("fallback-icon"));
         assert_eq!(app.exec, ["app"]);
         fs::write(&path, "[Desktop Entry]\nName=Invalid\nExec=app %x\n").unwrap();
-        assert!(parse_desktop_app(&path).is_none());
+        assert!(parse_app_file(&path).is_none());
     }
 
     #[test]

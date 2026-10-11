@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Honor XDG data-directory defaults and precedence when discovering apps. Let
+  hidden or excluded user entries suppress lower-priority copies, distinguish
+  nested desktop-file IDs, and scan deeper folders without following directory
+  symlink cycles indefinitely.
 - Preserve desktop app argument boundaries and escapes, expand name/icon/file
   location and literal-percent fields, and omit unused file/URL fields. Launch
   apps directly so missing executables report an error. Quote the same argument
