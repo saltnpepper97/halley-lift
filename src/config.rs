@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use rune_cfg::RuneConfig;
 
+use crate::mode::LiftMode;
+
 /// Embedded default config template. Written to the user config path on first
 /// launch so users have a documented starting point instead of silently running
 /// on baked-in defaults.
@@ -279,6 +281,19 @@ impl Default for LiftModeConfig {
     }
 }
 
+impl LiftModeConfig {
+    pub fn enabled(&self, mode: LiftMode) -> bool {
+        match mode {
+            LiftMode::General | LiftMode::Term => true,
+            LiftMode::Apps => self.apps,
+            LiftMode::Clusters => self.clusters,
+            LiftMode::Nodes => self.nodes,
+            LiftMode::Actions => self.actions,
+            LiftMode::Config => self.config,
+        }
+    }
+}
+
 impl LiftConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
         if !path.exists() {
@@ -428,14 +443,11 @@ impl LiftConfig {
         out.modes.nodes = cfg.get_or("lift.modes.nodes", out.modes.nodes);
         out.modes.actions = cfg.get_or("lift.modes.actions", out.modes.actions);
         out.modes.config = cfg.get_or("lift.modes.config", out.modes.config);
-        if let Ok(Some(providers)) = cfg.get_optional::<Vec<String>>("lift.providers") {
-            let providers = providers
-                .into_iter()
-                .filter(|p| known_provider(p))
-                .collect::<Vec<_>>();
-            if !providers.is_empty() {
-                out.providers = providers;
-            }
+        if let Some(providers) = cfg
+            .get_optional::<Vec<String>>("lift.providers")
+            .map_err(|error| format!("invalid lift.providers: {error}"))?
+        {
+            out.providers = providers;
         }
         validate(&out)?;
         Ok(out)
@@ -447,6 +459,15 @@ fn known_provider(value: &str) -> bool {
 }
 
 fn validate(config: &LiftConfig) -> Result<(), String> {
+    if let Some(provider) = config
+        .providers
+        .iter()
+        .find(|provider| !known_provider(provider))
+    {
+        return Err(format!(
+            "unknown lift.providers entry {provider:?}; expected apps, clusters, nodes, actions, or config"
+        ));
+    }
     if config.width < 420 {
         return Err("lift.width must be at least 420".into());
     }

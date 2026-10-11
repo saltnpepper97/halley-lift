@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Honor fuzzy matching, general-search providers, and prefixed-mode settings;
+  allow an empty provider list and reject unknown provider names. Use the panel
+  color as the fallback for empty or invalid search/dropdown colors.
 - Show action errors below the search box even when the footer is disabled or
   the query is empty. Reserve their space on constrained outputs and clear old
   messages when the query changes or a new action starts.

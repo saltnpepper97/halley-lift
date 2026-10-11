@@ -9,7 +9,7 @@ use halley_api::{
     NodeId, NodeKind, NodeSelector,
 };
 
-use crate::config::{LiftConfig, default_config_path, resolved_halley_config_path};
+use crate::config::{LiftConfig, LiftModeConfig, default_config_path, resolved_halley_config_path};
 use crate::live::LiveUpdates;
 use crate::mode::LiftMode;
 use crate::model::{ClusterDraft, LiftAction, LiftResult, LiftResultKind, mode_allows};
@@ -25,6 +25,7 @@ pub struct SearchContext {
 
 #[derive(Default)]
 pub struct ProviderIndex {
+    policy: SearchPolicy,
     apps: Vec<DesktopApp>,
     nodes: Vec<CachedNode>,
     clusters: Vec<CachedCluster>,
@@ -32,6 +33,38 @@ pub struct ProviderIndex {
     live_wake: Option<calloop::channel::Sender<()>>,
     terminal: String,
     terminal_icon_name: Option<String>,
+}
+
+struct SearchPolicy {
+    fuzzy: bool,
+    modes: LiftModeConfig,
+    providers: Vec<String>,
+}
+
+impl From<&LiftConfig> for SearchPolicy {
+    fn from(config: &LiftConfig) -> Self {
+        Self {
+            fuzzy: config.fuzzy,
+            modes: config.modes.clone(),
+            providers: config.providers.clone(),
+        }
+    }
+}
+
+impl Default for SearchPolicy {
+    fn default() -> Self {
+        Self::from(&LiftConfig::default())
+    }
+}
+
+impl SearchPolicy {
+    fn provider_enabled(&self, name: &str) -> bool {
+        self.providers.iter().any(|provider| provider == name)
+    }
+
+    fn includes_provider(&self, mode: LiftMode, name: &str) -> bool {
+        mode != LiftMode::General || self.provider_enabled(name)
+    }
 }
 
 fn api_options() -> ConnectOptions {
@@ -76,6 +109,7 @@ impl ProviderIndex {
         let terminal = config.terminal.trim().to_string();
         let terminal_icon_name = terminal_icon_name_for_apps(&apps, terminal.as_str());
         Self {
+            policy: SearchPolicy::from(config),
             apps,
             nodes: Vec::new(),
             clusters: Vec::new(),
@@ -88,6 +122,10 @@ impl ProviderIndex {
 
     pub fn needs_live_refresh(&self) -> bool {
         self.live_updates.is_none()
+            && (self.policy.modes.nodes
+                || self.policy.modes.clusters
+                || self.policy.provider_enabled("nodes")
+                || self.policy.provider_enabled("clusters"))
     }
 
     pub fn set_live_waker(&mut self, wake: calloop::channel::Sender<()>) {
@@ -109,27 +147,40 @@ impl ProviderIndex {
     }
 
     pub fn search(&self, ctx: &SearchContext) -> Vec<LiftResult> {
+        if !self.policy.modes.enabled(ctx.mode) {
+            return Vec::new();
+        }
         let mut results = Vec::new();
-        if matches!(
-            ctx.mode,
-            LiftMode::General | LiftMode::Apps | LiftMode::Clusters
-        ) {
+        if self.policy.includes_provider(ctx.mode, "apps")
+            && matches!(
+                ctx.mode,
+                LiftMode::General | LiftMode::Apps | LiftMode::Clusters
+            )
+        {
             results.extend(self.search_apps(ctx));
         }
-        if matches!(
-            ctx.mode,
-            LiftMode::General | LiftMode::Nodes | LiftMode::Clusters
-        ) {
+        if self.policy.includes_provider(ctx.mode, "nodes")
+            && matches!(
+                ctx.mode,
+                LiftMode::General | LiftMode::Nodes | LiftMode::Clusters
+            )
+        {
             results.extend(self.search_nodes(ctx));
         }
-        if matches!(ctx.mode, LiftMode::General | LiftMode::Clusters) {
+        if self.policy.includes_provider(ctx.mode, "clusters")
+            && matches!(ctx.mode, LiftMode::General | LiftMode::Clusters)
+        {
             results.extend(self.search_clusters(ctx));
         }
-        if matches!(ctx.mode, LiftMode::General | LiftMode::Actions) {
-            results.extend(search_actions(ctx));
+        if self.policy.includes_provider(ctx.mode, "actions")
+            && matches!(ctx.mode, LiftMode::General | LiftMode::Actions)
+        {
+            results.extend(search_actions(ctx, self.policy.fuzzy));
         }
-        if matches!(ctx.mode, LiftMode::General | LiftMode::Config) {
-            results.extend(search_config(ctx));
+        if self.policy.includes_provider(ctx.mode, "config")
+            && matches!(ctx.mode, LiftMode::General | LiftMode::Config)
+        {
+            results.extend(search_config(ctx, self.policy.fuzzy));
         }
         if ctx.mode == LiftMode::Term {
             results.extend(self.search_term(ctx));
@@ -172,7 +223,11 @@ impl ProviderIndex {
         self.apps
             .iter()
             .filter_map(|app| {
-                let score = match_score(ctx.query_lower.as_str(), app.search_text.as_str())?;
+                let score = match_score(
+                    ctx.query_lower.as_str(),
+                    app.search_text.as_str(),
+                    self.policy.fuzzy,
+                )?;
                 Some(LiftResult {
                     section: if ctx.mode == LiftMode::Clusters {
                         "Apps"
@@ -206,7 +261,11 @@ impl ProviderIndex {
         self.nodes
             .iter()
             .filter_map(|node| {
-                let mut score = match_score(ctx.query_lower.as_str(), node.search_text.as_str())?;
+                let mut score = match_score(
+                    ctx.query_lower.as_str(),
+                    node.search_text.as_str(),
+                    self.policy.fuzzy,
+                )?;
                 if node.pinned {
                     score += 1000.0;
                 }
@@ -241,7 +300,11 @@ impl ProviderIndex {
         self.clusters
             .iter()
             .filter_map(|cluster| {
-                let score = match_score(ctx.query_lower.as_str(), cluster.search_text.as_str())?;
+                let score = match_score(
+                    ctx.query_lower.as_str(),
+                    cluster.search_text.as_str(),
+                    self.policy.fuzzy,
+                )?;
                 Some(LiftResult {
                     section: "Existing Clusters".into(),
                     title: cluster.title.clone(),
@@ -353,7 +416,7 @@ fn create_cluster_result(_query: &str) -> LiftResult {
     }
 }
 
-fn search_actions(ctx: &SearchContext) -> Vec<LiftResult> {
+fn search_actions(ctx: &SearchContext, fuzzy: bool) -> Vec<LiftResult> {
     let actions = [
         (
             "reload-config",
@@ -374,6 +437,7 @@ fn search_actions(ctx: &SearchContext) -> Vec<LiftResult> {
             match_score(
                 ctx.query_lower.as_str(),
                 title.to_ascii_lowercase().as_str(),
+                fuzzy,
             )
             .map(|score| LiftResult {
                 section: "Actions".into(),
@@ -390,7 +454,7 @@ fn search_actions(ctx: &SearchContext) -> Vec<LiftResult> {
         .collect()
 }
 
-fn search_config(ctx: &SearchContext) -> Vec<LiftResult> {
+fn search_config(ctx: &SearchContext, fuzzy: bool) -> Vec<LiftResult> {
     let configs = [
         (
             "lift config",
@@ -406,7 +470,7 @@ fn search_config(ctx: &SearchContext) -> Vec<LiftResult> {
     configs
         .into_iter()
         .filter_map(|(haystack, title, path)| {
-            match_score(ctx.query_lower.as_str(), haystack).map(|score| LiftResult {
+            match_score(ctx.query_lower.as_str(), haystack, fuzzy).map(|score| LiftResult {
                 section: "Config".into(),
                 title: title.into(),
                 subtitle: Some(path.clone()),
@@ -664,7 +728,7 @@ fn provider_rank(kind: &LiftResultKind) -> u8 {
     }
 }
 
-fn match_score(query_lower: &str, haystack_lower: &str) -> Option<f64> {
+fn match_score(query_lower: &str, haystack_lower: &str, fuzzy: bool) -> Option<f64> {
     if query_lower.is_empty() {
         return Some(1.0);
     }
@@ -674,7 +738,11 @@ fn match_score(query_lower: &str, haystack_lower: &str) -> Option<f64> {
     if haystack_lower.contains(query_lower) {
         return Some(200.0 - haystack_lower.find(query_lower).unwrap_or(0) as f64);
     }
-    fuzzy_match(query_lower, haystack_lower).map(|score| 100.0 + score)
+    if fuzzy {
+        fuzzy_match(query_lower, haystack_lower).map(|score| 100.0 + score)
+    } else {
+        None
+    }
 }
 
 fn fuzzy_match(query: &str, haystack: &str) -> Option<f64> {
@@ -1149,6 +1217,7 @@ exec '\''/bin/zsh'\'' -i'"#
     #[test]
     fn cluster_mode_empty_query_keeps_all_stageable_results() {
         let index = ProviderIndex {
+            policy: SearchPolicy::default(),
             apps: (0..5)
                 .map(|idx| DesktopApp {
                     id: format!("app-{idx}"),
@@ -1194,6 +1263,16 @@ exec '\''/bin/zsh'\'' -i'"#
 
     fn provider_index_with_every_provider() -> ProviderIndex {
         ProviderIndex {
+            policy: SearchPolicy {
+                providers: vec![
+                    "apps".into(),
+                    "nodes".into(),
+                    "clusters".into(),
+                    "actions".into(),
+                    "config".into(),
+                ],
+                ..Default::default()
+            },
             apps: vec![app("kitty", "Kitty", "kitty", "kitty")],
             nodes: vec![CachedNode {
                 id: 7,
@@ -1458,6 +1537,7 @@ exec '\''/bin/zsh'\'' -i'"#
     #[test]
     fn cluster_draft_sends_selected_apps_only_as_launches() {
         let index = ProviderIndex {
+            policy: SearchPolicy::default(),
             apps: vec![app("kitty", "Kitty", "kitty", "kitty")],
             nodes: Vec::new(),
             clusters: Vec::new(),

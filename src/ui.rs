@@ -330,8 +330,9 @@ pub fn draw_palette(
     let hint = color(&config.colors.hint, Color::rgb8(133, 143, 168));
     let accent = color(&config.colors.accent, Color::rgb8(143, 181, 255));
     let subtext = color(&config.colors.subtext, Color::rgb8(158, 167, 191));
-    let search_fill = color(&config.colors.search, Color::rgba(0.035, 0.043, 0.07, 0.85));
-    let dropdown_fill = color(&config.colors.dropdown, Color::rgba(0.08, 0.09, 0.13, 0.94));
+    let panel_fill = color(&config.colors.panel, Color::rgba(0.08, 0.09, 0.13, 0.94));
+    let search_fill = color(&config.colors.search, panel_fill);
+    let dropdown_fill = color(&config.colors.dropdown, panel_fill);
     let bw = if config.border.enabled {
         config.border.width.max(0)
     } else {
