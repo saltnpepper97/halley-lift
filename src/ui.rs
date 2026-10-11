@@ -330,8 +330,9 @@ pub fn draw_palette(
     let hint = color(&config.colors.hint, Color::rgb8(133, 143, 168));
     let accent = color(&config.colors.accent, Color::rgb8(143, 181, 255));
     let subtext = color(&config.colors.subtext, Color::rgb8(158, 167, 191));
-    let search_fill = color(&config.colors.search, Color::rgba(0.035, 0.043, 0.07, 0.85));
-    let dropdown_fill = color(&config.colors.dropdown, Color::rgba(0.08, 0.09, 0.13, 0.94));
+    let panel_fill = color(&config.colors.panel, Color::rgba(0.08, 0.09, 0.13, 0.94));
+    let search_fill = color(&config.colors.search, panel_fill);
+    let dropdown_fill = color(&config.colors.dropdown, panel_fill);
     let bw = if config.border.enabled {
         config.border.width.max(0)
     } else {
@@ -703,6 +704,75 @@ mod tests {
             };
             3
         ]
+    }
+
+    #[test]
+    fn panel_color_fills_inherited_regions_without_compositing_under_explicit_colors() {
+        let mut config = LiftConfig::default();
+        config.border.enabled = false;
+        config.rounding.search = 0;
+        config.rounding.panel = 0;
+        config.rounding.dropdown = 0;
+        config.colors.panel = "#164b80dd".into();
+        let input = ModeInputState {
+            query: "nothing matches".into(),
+            ..Default::default()
+        };
+        let draft = ClusterDraft::default();
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        for (search, dropdown) in [("", ""), ("invalid", "invalid"), ("#ffffff80", "#10101040")] {
+            config.colors.search = search.into();
+            config.colors.dropdown = dropdown.into();
+            let mut icons = IconCache::new(&config);
+            let view = View {
+                config: &config,
+                input: &input,
+                mode: LiftMode::General,
+                results: &[],
+                selected: 0,
+                scroll_offset: 0,
+                draft: &draft,
+                status: None,
+                cursor_visible: false,
+            };
+            let height = surface_height(view) as u32;
+            let mut pixels = vec![0; (config.width * height * 4) as usize];
+            draw_palette(
+                &mut pixels,
+                config.width,
+                height,
+                &mut renderer,
+                &mut icons,
+                view,
+            )
+            .unwrap();
+            let prepared = renderer.snapshot.as_ref().unwrap();
+            for (key, raw, x, y) in [
+                ("search-chrome", search, 2, 2),
+                (
+                    "dropdown-chrome",
+                    dropdown,
+                    2,
+                    config.ui.search_height as u32 + 2,
+                ),
+            ] {
+                let fallback = color(&config.colors.panel, transparent());
+                let expected = color(raw, fallback);
+                let item = prepared.items.iter().find(|item| {
+                    matches!(item, PaintItem::Card { key: item_key, .. } if item_key.ends_with(key))
+                }).unwrap();
+                let PaintItem::Card { style, .. } = item else {
+                    unreachable!()
+                };
+                assert_eq!(style.fill, expected);
+                let alpha = pixels[((y * config.width + x) * 4 + 3) as usize];
+                assert_eq!(
+                    alpha,
+                    (expected.a * 255.0).round() as u8,
+                    "explicit alpha must not include a second panel layer"
+                );
+            }
+        }
     }
 
     #[test]

@@ -831,6 +831,10 @@ impl LiftApp {
     }
 
     fn materialize_draft(&mut self) {
+        if !self.config.modes.clusters {
+            self.status = Some("Cluster search is disabled".into());
+            return;
+        }
         let (mode, query) = self.effective_search();
         if mode != LiftMode::Clusters {
             self.status = Some("Use cluster search before finalizing a draft".into());

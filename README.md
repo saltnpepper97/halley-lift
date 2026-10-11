@@ -96,7 +96,7 @@ Halley owns that keybind and Lift owns its own window and appearance in
 
 ## Search Prefixes
 
-Lift searches everything by default. Prefixing the query with a provider name filters results without changing the search text into a badge.
+Lift's general search uses the providers listed in `lift.providers`. Prefixing the query with a provider name filters results without changing the search text into a badge.
 
 Supported modes:
 
@@ -169,6 +169,23 @@ point. Existing files are never overwritten.
 
 Example config lives at `examples/lift.rune`.
 
+`fuzzy false` uses case-insensitive contiguous matching instead of matching
+scattered letters. Exact and substring matches retain their existing ranking.
+`providers` chooses which providers contribute to general searches; an empty
+list disables all general-search results. Provider order does not change ranking.
+Known names are `apps`, `clusters`, `nodes`, `actions`, and `config`.
+
+The `modes` flags independently enable prefixed searches. For example, omitting
+`nodes` from `providers` removes running windows from general search while
+`modes.nodes true` keeps `node Firefox` available. A disabled mode returns no
+results. Cluster mode still offers apps and nodes to stage, regardless of the
+general provider list. `term` remains available separately. The default general
+provider list omits configuration files; the `config` prefix remains enabled.
+
+`colors.panel` supplies the background when `colors.search` or
+`colors.dropdown` is empty or invalid. Explicit search/dropdown colors override
+it, including their alpha; Lift does not paint a second background beneath them.
+
 Useful layout keys:
 
 ```rune
@@ -177,6 +194,7 @@ lift:
   width 760
   max-results 40
   visible-results 8
+  fuzzy true
   icons true
   icon-size 28
   icon-theme "auto"
@@ -184,6 +202,15 @@ lift:
   terminal "x-terminal-emulator -e"
   close-on-focus-loss false
   alt-number-jump true
+
+  modes:
+    apps true
+    clusters true
+    nodes true
+    actions true
+    config true
+  end
+  providers ["apps" "clusters" "nodes" "actions"]
 
   position:
     anchor "center" # center | top | top-left | top-right | bottom | bottom-left | bottom-right

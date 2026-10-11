@@ -5,7 +5,7 @@ lift:
   width 760
   max-results 12
   visible-results 8
-  fuzzy true
+  fuzzy true # false = contiguous matching only
   show-section-labels true
   icons true
   icon-size 28
@@ -32,7 +32,7 @@ lift:
   end
 
   colors:
-    panel "#151720ee"
+    panel "#151720ee" # Fallback when search/dropdown is empty or invalid.
     panel-border "#2b3248cc"
     dropdown "#151720ee"
     dropdown-border "#2b3248cc"
@@ -88,6 +88,7 @@ lift:
     hint-font-size 12
   end
 
+  # Enable prefixed searches independently of the general provider list.
   modes:
     apps true
     clusters true
@@ -96,5 +97,5 @@ lift:
     config true
   end
 
-  providers ["apps" "clusters" "nodes" "actions"]
+  providers ["apps" "clusters" "nodes" "actions"] # General search only; [] disables it.
 end
