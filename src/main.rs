@@ -7,6 +7,7 @@
 mod activation;
 mod blur;
 mod config;
+mod desktop_exec;
 mod icons;
 mod instance;
 mod live;
@@ -844,8 +845,13 @@ impl LiftApp {
             self.status = Some("Select apps or nodes with Space before finalizing".into());
             return;
         }
-        let action = prepare_cluster_draft(&self.index, &self.draft, query.as_str());
-        self.start_activation(action, "cluster-draft");
+        match prepare_cluster_draft(&self.index, &self.draft, query.as_str()) {
+            Ok(action) => self.start_activation(action, "cluster-draft"),
+            Err(error) => {
+                self.status = Some(error);
+                self.mark_redraw();
+            }
+        }
     }
 
     fn start_activation(&mut self, action: Activation, exit_reason: &'static str) {

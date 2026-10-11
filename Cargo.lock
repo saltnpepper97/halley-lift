@@ -859,6 +859,7 @@ dependencies = [
  "halley-ipc",
  "halley-ui",
  "rune-cfg",
+ "shlex",
  "smithay-client-toolkit",
  "wayland-client",
 ]

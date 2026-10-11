@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve desktop app argument boundaries and escapes, expand name/icon/file
+  location and literal-percent fields, and omit unused file/URL fields. Launch
+  apps directly so missing executables report an error. Quote the same argument
+  list when handing staged apps to the compositor.
 - Honor fuzzy matching, general-search providers, and prefixed-mode settings;
   allow an empty provider list and reject unknown provider names. Use the panel
   color as the fallback for empty or invalid search/dropdown colors.

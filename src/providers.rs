@@ -10,6 +10,7 @@ use halley_api::{
 };
 
 use crate::config::{LiftConfig, LiftModeConfig, default_config_path, resolved_halley_config_path};
+use crate::desktop_exec::{self, unescape};
 use crate::live::LiveUpdates;
 use crate::mode::LiftMode;
 use crate::model::{ClusterDraft, LiftAction, LiftResult, LiftResultKind, mode_allows};
@@ -81,7 +82,7 @@ pub struct DesktopApp {
     pub name: String,
     pub comment: Option<String>,
     pub icon_name: Option<String>,
-    pub exec: String,
+    pub exec: Vec<String>,
     pub terminal: bool,
     search_text: String,
 }
@@ -345,14 +346,14 @@ impl ProviderIndex {
         }]
     }
 
-    fn draft_app_launches(&self, app_ids: &[String]) -> Vec<ClusterDraftApp> {
+    fn draft_app_launches(&self, app_ids: &[String]) -> Result<Vec<ClusterDraftApp>, String> {
         app_ids
             .iter()
-            .filter_map(|app_id| {
-                let app = self.apps.iter().find(|app| app.id == *app_id)?;
-                Some(ClusterDraftApp {
+            .filter_map(|app_id| self.apps.iter().find(|app| app.id == *app_id))
+            .map(|app| {
+                Ok(ClusterDraftApp {
                     app_id: app.id.clone(),
-                    command: app_launch_command(app, self.terminal.as_str()),
+                    command: desktop_exec::shell_command(&app_launch_args(app, &self.terminal)?),
                 })
             })
             .collect()
@@ -486,6 +487,7 @@ fn search_config(ctx: &SearchContext, fuzzy: bool) -> Vec<LiftResult> {
 }
 
 pub enum Activation {
+    LaunchApp(Vec<String>),
     Launch {
         command: String,
         terminal: bool,
@@ -506,6 +508,7 @@ impl Activation {
 
     fn execute_with_options(self, options: ConnectOptions) -> Result<(), String> {
         match self {
+            Self::LaunchApp(args) => launch_app(&args),
             Self::Launch {
                 command,
                 terminal,
@@ -552,11 +555,7 @@ pub fn prepare_activation(
                 .iter()
                 .find(|app| app.id == *app_id)
                 .ok_or_else(|| format!("app `{app_id}` not found"))?;
-            Activation::Launch {
-                command: app.exec.clone(),
-                terminal: app.terminal,
-                terminal_command: index.terminal.clone(),
-            }
+            Activation::LaunchApp(app_launch_args(app, &index.terminal)?)
         }
         LiftAction::OpenCluster { .. }
         | LiftAction::FocusNode { .. }
@@ -619,28 +618,39 @@ pub fn prepare_cluster_draft(
     index: &ProviderIndex,
     draft: &ClusterDraft,
     _query: &str,
-) -> Activation {
-    Activation::ClusterDraft(build_cluster_draft_request(index, draft))
+) -> Result<Activation, String> {
+    Ok(Activation::ClusterDraft(build_cluster_draft_request(
+        index, draft,
+    )?))
 }
 
-fn build_cluster_draft_request(index: &ProviderIndex, draft: &ClusterDraft) -> ApiClusterDraft {
-    ApiClusterDraft {
+fn build_cluster_draft_request(
+    index: &ProviderIndex,
+    draft: &ClusterDraft,
+) -> Result<ApiClusterDraft, String> {
+    Ok(ApiClusterDraft {
         name_hint: None,
-        apps: index.draft_app_launches(&draft.app_ids),
+        apps: index.draft_app_launches(&draft.app_ids)?,
         running_nodes: draft
             .running_node_ids
             .iter()
             .copied()
             .map(NodeId::new)
             .collect(),
-    }
+    })
 }
 
-fn app_launch_command(app: &DesktopApp, terminal_command: &str) -> String {
+fn app_launch_args(app: &DesktopApp, terminal_command: &str) -> Result<Vec<String>, String> {
     if app.terminal {
-        format!("{} {}", terminal_command.trim(), app.exec)
+        let mut args = shlex::split(terminal_command)
+            .ok_or("Unclosed quote or escape in configured terminal command")?;
+        if args.first().is_none_or(|program| program.is_empty()) {
+            return Err("Terminal command is empty".into());
+        }
+        args.extend(app.exec.iter().cloned());
+        Ok(args)
     } else {
-        app.exec.clone()
+        Ok(app.exec.clone())
     }
 }
 
@@ -658,7 +668,7 @@ fn terminal_icon_name_for_apps(apps: &[DesktopApp], terminal_command: &str) -> O
 fn terminal_app_match_score(app: &DesktopApp, terminal: &str) -> Option<i32> {
     let id = app.id.to_ascii_lowercase();
     let name = app.name.to_ascii_lowercase();
-    let exec = command_program_name(app.exec.as_str()).map(|value| value.to_ascii_lowercase());
+    let exec = argv_program_name(&app.exec).map(|value| value.to_ascii_lowercase());
 
     if id == terminal || id.ends_with(&format!(".{terminal}")) {
         return Some(100);
@@ -679,41 +689,17 @@ fn terminal_app_match_score(app: &DesktopApp, terminal: &str) -> Option<i32> {
 }
 
 fn command_program_name(command: &str) -> Option<String> {
-    shell_words(command).into_iter().find_map(|word| {
+    argv_program_name(&shlex::split(command)?)
+}
+
+fn argv_program_name(args: &[String]) -> Option<String> {
+    args.iter().find_map(|word| {
         if word == "env" || (word.contains('=') && !word.contains('/')) {
             return None;
         }
-        let file_name = Path::new(&word).file_name()?.to_str()?.trim();
+        let file_name = Path::new(word).file_name()?.to_str()?.trim();
         (!file_name.is_empty()).then(|| file_name.to_string())
     })
-}
-
-fn shell_words(command: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-    let mut chars = command.chars().peekable();
-    let mut quote = None;
-    while let Some(ch) = chars.next() {
-        match (quote, ch) {
-            (None, '\'' | '"') => quote = Some(ch),
-            (Some(active), ch) if ch == active => quote = None,
-            (None, ch) if ch.is_whitespace() => {
-                if !current.is_empty() {
-                    words.push(std::mem::take(&mut current));
-                }
-            }
-            (_, '\\') => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
-            }
-            _ => current.push(ch),
-        }
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
 }
 
 fn provider_rank(kind: &LiftResultKind) -> u8 {
@@ -805,7 +791,7 @@ fn parse_desktop_app(path: &Path) -> Option<DesktopApp> {
         } else if let Some(value) = line.strip_prefix("StartupWMClass=") {
             startup_wm_class = Some(unescape(value));
         } else if let Some(value) = line.strip_prefix("Exec=") {
-            exec = Some(clean_exec(value));
+            exec = Some(value.to_string());
         } else if let Some(value) = line.strip_prefix("Hidden=") {
             hidden = value.eq_ignore_ascii_case("true");
         } else if let Some(value) = line.strip_prefix("NoDisplay=") {
@@ -823,7 +809,7 @@ fn parse_desktop_app(path: &Path) -> Option<DesktopApp> {
     }
     let id = path.file_stem()?.to_string_lossy().into_owned();
     let name = name?;
-    let exec = exec?;
+    let exec = desktop_exec::parse(&exec?, &name, icon_name.as_deref(), path).ok()?;
     let search_text = format!(
         "{} {} {} {}",
         name,
@@ -874,19 +860,21 @@ fn walk_desktop_files(dir: &Path, depth: usize, f: &mut impl FnMut(&Path)) {
     }
 }
 
-fn clean_exec(value: &str) -> String {
-    value
-        .split_whitespace()
-        .filter(|part| !part.starts_with('%'))
-        .collect::<Vec<_>>()
-        .join(" ")
+fn app_command(args: &[String]) -> Result<Command, String> {
+    let (program, args) = args.split_first().ok_or("Application command is empty")?;
+    let mut command = Command::new(program);
+    command.args(args);
+    Ok(command)
 }
 
-fn unescape(value: &str) -> String {
-    value
-        .replace("\\n", "\n")
-        .replace("\\s", " ")
-        .replace("\\\\", "\\")
+fn launch_app(args: &[String]) -> Result<(), String> {
+    app_command(args)?
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not launch {}: {error}", args[0]))
 }
 
 fn launch_exec(command: &str, terminal: bool, terminal_command: &str) -> Result<(), String> {
@@ -1365,7 +1353,7 @@ exec '\''/bin/zsh'\'' -i'"#
                     name: format!("App {idx}"),
                     comment: None,
                     icon_name: None,
-                    exec: "true".into(),
+                    exec: vec!["true".into()],
                     terminal: false,
                     search_text: format!("app {idx}"),
                 })
@@ -1622,7 +1610,7 @@ exec '\''/bin/zsh'\'' -i'"#
             name: name.into(),
             comment: None,
             icon_name: Some(icon.into()),
-            exec: exec.into(),
+            exec: shlex::split(exec).unwrap(),
             terminal: false,
             search_text: format!("{id} {name}").to_ascii_lowercase(),
         }
@@ -1692,12 +1680,207 @@ exec '\''/bin/zsh'\'' -i'"#
             running_node_ids: vec![42],
         };
 
-        let request = build_cluster_draft_request(&index, &draft);
+        let request = build_cluster_draft_request(&index, &draft).unwrap();
 
         assert_eq!(request.name_hint, None);
         assert_eq!(request.apps.len(), 1);
         assert_eq!(request.apps[0].app_id, "kitty");
-        assert_eq!(request.apps[0].command, "kitty");
+        assert_eq!(request.apps[0].command, "'kitty'");
         assert_eq!(request.running_nodes, vec![NodeId::new(42)]);
+    }
+
+    struct FileFixture(PathBuf);
+
+    impl FileFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "lift-desktop-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for FileFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn parsed_probe(fixture: &FileFixture) -> DesktopApp {
+        let probe = fixture.0.join("argument probe.sh");
+        fs::write(&probe, "printf '%s\\0' \"$@\"\n").unwrap();
+        let desktop = fixture.0.join("probe file.desktop");
+        fs::write(&desktop, format!(
+            "[Desktop Entry]\nType=Application\nName=Éditor's $HOME %k\nIcon=test icon\nExec=/bin/sh \"{}\" \"two  spaces\" \"\" %c %k %i %% \"literal \\\\$HOME\"\n",
+            probe.display()
+        )).unwrap();
+        parse_desktop_app(&desktop).unwrap()
+    }
+
+    fn received_args(output: std::process::Output) -> Vec<String> {
+        assert!(output.status.success(), "{:?}", output);
+        let mut args = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .map(|arg| String::from_utf8(arg.to_vec()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(args.pop().as_deref(), Some(""));
+        args
+    }
+
+    #[test]
+    fn parsed_desktop_entry_reaches_the_child_and_cluster_shell_unchanged() {
+        let fixture = FileFixture::new();
+        let app = parsed_probe(&fixture);
+        let index = ProviderIndex {
+            apps: vec![app.clone()],
+            ..Default::default()
+        };
+        let result = index
+            .search(&SearchContext {
+                mode: LiftMode::Apps,
+                query: String::new(),
+                query_lower: String::new(),
+                max_results: 10,
+                draft_count: 0,
+            })
+            .remove(0);
+        let Activation::LaunchApp(args) = prepare_activation(&index, &result).unwrap() else {
+            panic!("desktop activation must launch argv directly");
+        };
+        let expected = vec![
+            "two  spaces".into(),
+            String::new(),
+            "Éditor's $HOME %k".into(),
+            fixture
+                .0
+                .join("probe file.desktop")
+                .to_string_lossy()
+                .into_owned(),
+            "--icon".into(),
+            "test icon".into(),
+            "%".into(),
+            "literal $HOME".into(),
+        ];
+        assert_eq!(
+            received_args(app_command(&args).unwrap().output().unwrap()),
+            expected
+        );
+        let draft = ClusterDraft {
+            app_ids: vec![app.id],
+            running_node_ids: vec![],
+        };
+        let request = build_cluster_draft_request(&index, &draft).unwrap();
+        assert_eq!(
+            received_args(
+                Command::new("/bin/sh")
+                    .args(["-c", &request.apps[0].command])
+                    .output()
+                    .unwrap()
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn terminal_prefix_quotes_are_preserved_for_direct_and_cluster_launches() {
+        let fixture = FileFixture::new();
+        let mut app = parsed_probe(&fixture);
+        app.terminal = true;
+        let terminal = fixture.0.join("fake terminal.sh");
+        fs::write(
+            &terminal,
+            "test \"$1\" = -e || exit 1\nshift\nexec \"$@\"\n",
+        )
+        .unwrap();
+        let prefix = format!("/bin/sh {} -e", shell_quote(&terminal.to_string_lossy()));
+        let args = app_launch_args(&app, &prefix).unwrap();
+        let expected = received_args(app_command(&app.exec).unwrap().output().unwrap());
+        assert_eq!(
+            received_args(app_command(&args).unwrap().output().unwrap()),
+            expected
+        );
+        let index = ProviderIndex {
+            apps: vec![app.clone()],
+            terminal: prefix,
+            ..Default::default()
+        };
+        let draft = ClusterDraft {
+            app_ids: vec![app.id],
+            running_node_ids: vec![],
+        };
+        let request = build_cluster_draft_request(&index, &draft).unwrap();
+        assert_eq!(
+            received_args(
+                Command::new("/bin/sh")
+                    .args(["-c", &request.apps[0].command])
+                    .output()
+                    .unwrap()
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn desktop_icon_expansion_does_not_use_the_ui_icon_fallback() {
+        let fixture = FileFixture::new();
+        let path = fixture.0.join("fallback-icon.desktop");
+        fs::write(
+            &path,
+            "[Desktop Entry]\nName=App\nStartupWMClass=fallback-icon\nExec=app %i %U\n",
+        )
+        .unwrap();
+        let app = parse_desktop_app(&path).unwrap();
+        assert_eq!(app.icon_name.as_deref(), Some("fallback-icon"));
+        assert_eq!(app.exec, ["app"]);
+        fs::write(&path, "[Desktop Entry]\nName=Invalid\nExec=app %x\n").unwrap();
+        assert!(parse_desktop_app(&path).is_none());
+    }
+
+    #[test]
+    fn missing_or_inaccessible_app_executables_return_an_action_error() {
+        let fixture = FileFixture::new();
+        let missing = fixture.0.join("missing app").to_string_lossy().into_owned();
+        let error = Activation::LaunchApp(vec![missing.clone()])
+            .execute()
+            .unwrap_err();
+        assert!(error.contains(&missing) && error.starts_with("Could not launch "));
+        let blocked = fixture.0.join("not executable");
+        fs::write(&blocked, "#!/bin/sh\nexit 0\n").unwrap();
+        let error = Activation::LaunchApp(vec![blocked.to_string_lossy().into_owned()])
+            .execute()
+            .unwrap_err();
+        assert!(error.starts_with("Could not launch "));
+    }
+
+    #[test]
+    fn invalid_terminal_prefix_fails_direct_activation_and_cluster_preparation() {
+        let fixture = FileFixture::new();
+        let mut app = parsed_probe(&fixture);
+        app.terminal = true;
+        for prefix in ["", "'' -e", "\"unclosed -e", "kitty -e \\"] {
+            assert!(
+                app_launch_args(&app, prefix).is_err(),
+                "accepted {prefix:?}"
+            );
+            let index = ProviderIndex {
+                apps: vec![app.clone()],
+                terminal: prefix.into(),
+                ..Default::default()
+            };
+            let draft = ClusterDraft {
+                app_ids: vec![app.id.clone()],
+                running_node_ids: vec![],
+            };
+            assert!(prepare_cluster_draft(&index, &draft, "").is_err());
+        }
+        assert_eq!(
+            app_launch_args(&app, "'terminal with spaces' --title 'a b' -e").unwrap()[..5],
+            ["terminal with spaces", "--title", "a b", "-e", "/bin/sh"]
+        );
     }
 }
