@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show action errors below the search box even when the footer is disabled or
+  the query is empty. Reserve their space on constrained outputs and clear old
+  messages when the query changes or a new action starts.
 - Reconnect live node and cluster updates after API disconnects or event sequence
   gaps, replacing the cache from a fresh snapshot. Retry failed initial loads
   and refresh query results when subscriptions are unavailable.

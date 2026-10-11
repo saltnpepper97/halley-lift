@@ -9,7 +9,7 @@ use halley_ui::input::{InputEvent, Key, Modifiers};
 use halley_ui::software::{PixelFormat, Surface};
 use halley_ui::{
     ActionId, Button, Card, Color, Column, Font, Image, Label, Point, Rect as UiRect, Row,
-    TextInput, TextSystem, Theme, UiView,
+    TextInput, TextOverflow, TextSystem, Theme, UiView,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,6 +37,9 @@ pub fn panel_height(config: &LiftConfig) -> i32 {
     config.ui.search_height.max(1)
 }
 fn dropdown_visible(view: View<'_>) -> bool {
+    results_visible(view) || view.status.is_some()
+}
+fn results_visible(view: View<'_>) -> bool {
     !view.input.query.trim().is_empty()
         || view.input.mode != LiftMode::General
         || (view.mode == LiftMode::Clusters && view.draft.count() > 0)
@@ -50,15 +53,22 @@ fn dropdown_base_height(view: View<'_>) -> i32 {
     }
     if ui.footer_height > 0 {
         height += ui.row_gap + ui.footer_height;
-        if view.status.is_some() {
-            height += ui.hint_font_size as i32 + 6;
-        }
+    }
+    if view.status.is_some() {
+        height += status_height(view.config) + ui.row_gap;
     }
     height
 }
 
+fn status_height(config: &LiftConfig) -> i32 {
+    config.ui.hint_font_size.clamp(1, u16::MAX as u32) as i32 + 6
+}
+
 /// Limit the viewport to complete rows instead of letting Taffy shrink their text.
 pub fn visible_results(view: View<'_>, height: u32) -> usize {
+    if !results_visible(view) {
+        return 0;
+    }
     let ui = &view.config.ui;
     let mut used = dropdown_base_height(view);
     let mut section = "";
@@ -92,6 +102,9 @@ pub fn surface_height(view: View<'_>) -> i32 {
         return panel_height(view.config);
     }
     let mut height = dropdown_base_height(view);
+    if !results_visible(view) {
+        return height.clamp(panel_height(view.config), 980);
+    }
     // A constrained viewport may scroll farther than the requested viewport.
     // Keep requesting the full content size when navigating its final rows.
     let scroll_offset = view.scroll_offset.min(
@@ -389,9 +402,27 @@ pub fn draw_palette(
         .gap(ui.dropdown_gap as f32)
         .child(search_card);
     let show_dropdown = dropdown_visible(view)
-        && (visible_results > 0 || view.results.is_empty() || view.draft.count() > 0);
+        && (visible_results > 0
+            || view.results.is_empty()
+            || view.draft.count() > 0
+            || view.status.is_some());
     if show_dropdown {
         let mut list = Column::new("results").gap(0.0).grow(1.0);
+        if let Some(status) = view.status {
+            list = list
+                .child(
+                    label(
+                        "status",
+                        status,
+                        config,
+                        ui.hint_font_size,
+                        color(&config.colors.danger, Color::rgb8(235, 154, 143)),
+                    )
+                    .overflow(TextOverflow::EllipsisEnd)
+                    .height(status_height(config) as f32),
+                )
+                .child(Row::new("status-gap").height(ui.row_gap as f32));
+        }
         if view.mode == LiftMode::Clusters && view.draft.count() > 0 {
             let name = if view.input.query.trim().is_empty() {
                 "untitled"
@@ -538,7 +569,7 @@ pub fn draw_palette(
             }
         }
         list = list.child(Row::new("list-bottom").height(ui.row_gap.max(8) as f32));
-        if view.results.is_empty() {
+        if results_visible(view) && view.results.is_empty() {
             list = list.child(
                 label(
                     "no-results",
@@ -552,18 +583,6 @@ pub fn draw_palette(
         }
         if ui.footer_height > 0 {
             list = list.child(Row::new("footer-gap").height(ui.row_gap as f32));
-            if let Some(status) = view.status {
-                list = list.child(
-                    label(
-                        "status",
-                        status,
-                        config,
-                        ui.hint_font_size,
-                        color(&config.colors.danger, Color::rgb8(235, 154, 143)),
-                    )
-                    .height(ui.hint_font_size as f32 + 6.0),
-                );
-            }
             list = list.child(
                 label(
                     "footer",

@@ -55,6 +55,10 @@ background with two-second socket read/write timeouts, keeping search and Escape
 responsive if the API stops replying. Repeated activation is ignored while an
 action is pending; successful activation closes Lift as usual.
 
+Action errors appear below the search box, including with `footer-height 0` or
+an empty query. Editing the query or starting a new action clears the previous
+message. The optional footer controls shortcut hints independently of errors.
+
 Live node and cluster results recover from API disconnects and missed events by
 reconnecting for a complete snapshot. Failed initial loads retry in the
 background, with a one-second pause between attempts. Servers that reject
