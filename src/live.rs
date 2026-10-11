@@ -1,12 +1,15 @@
 use std::io;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use halley_api::{Client, ClusterSummary, ConnectOptions, Event, EventTopic, NodeInfo};
 
 const RETRY_DELAY: Duration = Duration::from_secs(1);
+const FALLBACK_INTERVAL: Duration = Duration::from_millis(100);
+const SUBSCRIPTION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
+#[derive(Clone, PartialEq)]
 pub struct LiveSnapshot {
     pub nodes: Vec<NodeInfo>,
     pub clusters: Vec<ClusterSummary>,
@@ -90,18 +93,18 @@ fn refresh(
     if cancelled(stop) {
         return Ok(());
     }
-    let mut subscription = match client.subscribe([EventTopic::Nodes, EventTopic::Clusters]) {
-        Ok(subscription) => subscription,
-        Err(_) => {
-            // Older servers may not offer subscriptions. Keep refreshing their
-            // query results as well; failed requests leave the last good cache.
-            let snapshot = LiveSnapshot {
-                nodes: client.nodes(None)?,
-                clusters: client.clusters(None)?,
-            };
-            if !cancelled(stop) {
-                publish(pending, wake, snapshot);
+    let mut previous_fallback = None;
+    let mut subscription = loop {
+        match client.subscribe([EventTopic::Nodes, EventTopic::Clusters]) {
+            Ok(subscription) => break subscription,
+            Err(_) => {
+                // Older or differently-versioned snapshots may not support a
+                // usable stream. Reuse the query connection for live titles,
+                // rather than sampling their animation once per second.
+                poll_fallback(&client, pending, wake, stop, &mut previous_fallback)?;
             }
+        }
+        if cancelled(stop) {
             return Ok(());
         }
     };
@@ -142,6 +145,44 @@ fn refresh(
                 clusters: clusters.clone(),
             },
         );
+    }
+}
+
+fn poll_fallback(
+    client: &Client,
+    pending: &Mutex<Option<LiveSnapshot>>,
+    wake: Option<&calloop::channel::Sender<()>>,
+    stop: &mpsc::Receiver<()>,
+    previous: &mut Option<LiveSnapshot>,
+) -> halley_api::Result<()> {
+    let retry_at = Instant::now() + SUBSCRIPTION_RETRY_INTERVAL;
+    loop {
+        if cancelled(stop) {
+            return Ok(());
+        }
+        let snapshot = LiveSnapshot {
+            nodes: client.nodes(None)?,
+            clusters: client.clusters(None)?,
+        };
+        if cancelled(stop) {
+            return Ok(());
+        }
+        // Quiet windows do not cause repaints. Keep the latest complete state
+        // and preserve the last good cache if a later query disconnects.
+        if previous.as_ref() != Some(&snapshot) {
+            publish(pending, wake, snapshot.clone());
+            *previous = Some(snapshot);
+        }
+        let wait = FALLBACK_INTERVAL.min(retry_at.saturating_duration_since(Instant::now()));
+        if !matches!(
+            stop.recv_timeout(wait),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ) {
+            return Ok(());
+        }
+        if Instant::now() >= retry_at {
+            return Ok(());
+        }
     }
 }
 
@@ -493,15 +534,15 @@ mod tests {
         let listener = UnixListener::bind(fixture.socket()).unwrap();
         let (advance, steps) = mpsc::channel();
         let server = thread::spawn(move || {
+            let (control, events) = subscribe(&listener);
+            reply(
+                &events,
+                Response::ApiError(ServerError {
+                    kind: ServerErrorKind::Unsupported,
+                    message: "no subscriptions".into(),
+                }),
+            );
             for id in [1, 2] {
-                let (control, events) = subscribe(&listener);
-                reply(
-                    &events,
-                    Response::ApiError(ServerError {
-                        kind: ServerErrorKind::Unsupported,
-                        message: "no subscriptions".into(),
-                    }),
-                );
                 assert!(matches!(
                     request(&control),
                     Request::Node(halley_ipc::NodeRequest::List { .. })
