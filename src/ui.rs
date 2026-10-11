@@ -711,6 +711,28 @@ pub fn draw_palette(
         }
         true
     });
+    if show_dropdown
+        && ui.dropdown_gap == 0
+        && let Some(search_rect) = prepared.rects.get("search-chrome")
+    {
+        let inset = if outline { bw as f32 } else { 0.0 };
+        prepared.items.push(PaintItem::Card {
+            key: "search-divider".into(),
+            rect: UiRect::new(
+                search_rect.origin.x + inset,
+                search_rect.origin.y + search_rect.size.height,
+                (search_rect.size.width - inset * 2.0).max(0.0),
+                1.0,
+            ),
+            clip: prepared.bounds,
+            style: style(
+                color(&config.colors.divider, Color::rgba(0.17, 0.20, 0.28, 0.60)),
+                transparent(),
+                0,
+                0,
+            ),
+        });
+    }
     let mut surface = Surface::new(canvas, width, height, width as usize * 4, PixelFormat::Bgra)
         .map_err(|e| e.to_string())?;
     surface.clear(transparent());
@@ -722,6 +744,95 @@ pub fn draw_palette(
 mod tests {
     use super::*;
     use crate::model::{LiftAction, LiftResultKind};
+
+    #[test]
+    fn configured_divider_paints_one_row_only_for_connected_dropdowns() {
+        let mut config = LiftConfig {
+            icons: false,
+            ..Default::default()
+        };
+        let draft = ClusterDraft::default();
+        let results = error_test_results();
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        for (border_style, border_enabled, gap, query, count, status, width, height, visible) in [
+            ("outline", true, 0, "missing", 0, None, 760, 174, true),
+            ("outline", true, 0, "Editor", 3, None, 420, 314, true),
+            ("inset", true, 0, "missing", 0, None, 760, 174, true),
+            ("outline", false, 0, "missing", 0, None, 760, 174, true),
+            (
+                "outline",
+                true,
+                0,
+                "",
+                0,
+                Some("Action failed"),
+                420,
+                112,
+                true,
+            ),
+            ("outline", true, 8, "missing", 0, None, 760, 182, false),
+            ("outline", true, 0, "", 0, None, 760, 60, false),
+            ("outline", true, 0, "Editor", 3, None, 420, 60, false),
+            ("outline", true, 0, "missing", 0, None, 420, 61, true),
+        ] {
+            config.border.style = border_style.into();
+            config.border.enabled = border_enabled;
+            config.ui.dropdown_gap = gap;
+            let input = ModeInputState {
+                query: query.into(),
+                ..Default::default()
+            };
+            let mut captures = Vec::new();
+            for divider in ["#00000000", "#e13c7fff"] {
+                config.colors.divider = divider.into();
+                let view = View {
+                    config: &config,
+                    input: &input,
+                    mode: LiftMode::General,
+                    results: &results[..count],
+                    selected: 0,
+                    scroll_offset: 0,
+                    draft: &draft,
+                    status,
+                    cursor_visible: false,
+                };
+                let mut icons = IconCache::new(&config);
+                let mut pixels = vec![0; (width * height * 4) as usize];
+                draw_palette(&mut pixels, width, height, &mut renderer, &mut icons, view).unwrap();
+                captures.push(pixels);
+            }
+            let changed: Vec<_> = captures[0]
+                .chunks_exact(4)
+                .zip(captures[1].chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (hidden, shown))| hidden != shown)
+                .collect();
+            assert_eq!(!changed.is_empty(), visible, "{query:?}, {height}, {gap}");
+            let inset = if border_enabled && border_style == "outline" {
+                1
+            } else {
+                0
+            };
+            if visible {
+                assert_eq!(changed.len(), (width - inset * 2) as usize);
+            }
+            for (index, _) in changed {
+                let x = index as u32 % width;
+                assert_eq!(index as u32 / width, config.ui.search_height as u32);
+                assert!(
+                    x >= inset && x < width - inset,
+                    "divider must preserve border edges"
+                );
+            }
+            if visible {
+                let index = ((config.ui.search_height as u32 * width + width / 2) * 4) as usize;
+                let pixel = &captures[1][index..index + 4];
+                // The toolkit antialiases a 1px card; its configured pink tint
+                // must remain visible after compositing over the dropdown.
+                assert!(pixel[0] > 100 && pixel[1] < 80 && pixel[2] > 200 && pixel[3] > 240);
+            }
+        }
+    }
 
     #[test]
     fn alt_numbers_address_only_painted_visible_rows() {

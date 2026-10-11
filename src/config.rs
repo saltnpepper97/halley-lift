@@ -72,6 +72,8 @@ pub struct LiftColorConfig {
     pub dropdown_border: String,
     pub search: String,
     pub row_selected: String,
+    /// One-pixel separator between connected search and dropdown chrome.
+    /// A fully transparent color hides it.
     pub divider: String,
     pub text: String,
     pub subtext: String,
