@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Match retained result rows to their painted action and title before mouse or
+  accessibility activation, so live updates cannot redirect a same-title row
+  to a different node, app, cluster, command, or configuration file before repainting.
 - Honor XDG data-directory defaults and precedence when discovering apps. Let
   hidden or excluded user entries suppress lower-priority copies, distinguish
   nested desktop-file IDs, and scan deeper folders without following directory
