@@ -290,6 +290,21 @@ full result set.
 
 App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
 
+App discovery searches `XDG_DATA_HOME/applications` first, falling back to
+`~/.local/share/applications` when `XDG_DATA_HOME` is empty, unset, or relative.
+It then searches `applications` beneath the absolute paths in `XDG_DATA_DIRS`,
+in order; an empty or unset list defaults to `/usr/local/share:/usr/share`.
+Relative paths are ignored. These follow the
+[XDG directory rules](https://specifications.freedesktop.org/basedir/latest/).
+
+The first readable desktop file for an ID takes precedence, including when
+`Hidden=true`, `NoDisplay=true`, or an invalid command excludes it from results.
+This lets user entries suppress system entries. Nested files use their relative
+path with slashes changed to dashes, so `left/shared.desktop` and
+`right/shared.desktop` remain separate apps. Lift keeps its existing convention
+of omitting `.desktop` from app and cluster IDs. Discovery scans all folder
+depths and skips directory symlink cycles.
+
 Desktop app `Exec` values are parsed into arguments using the
 [Desktop Entry rules](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html).
 Double quotes preserve spaces and empty arguments; string and quoting escapes
