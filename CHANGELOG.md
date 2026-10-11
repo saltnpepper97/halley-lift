@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reconnect live node and cluster updates after API disconnects or event sequence
+  gaps, replacing the cache from a fresh snapshot. Retry failed initial loads
+  and refresh query results when subscriptions are unavailable.
 - Serialize single-instance socket ownership through startup and shutdown, and
   only remove the socket owned by the exiting instance. Recover stale sockets
   after crashes without deleting replacement sockets or unrelated files.

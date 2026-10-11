@@ -9,6 +9,7 @@ mod blur;
 mod config;
 mod icons;
 mod instance;
+mod live;
 mod mode;
 mod model;
 mod providers;
@@ -703,10 +704,11 @@ impl LiftApp {
                 "live ipc prefetch ready nodes={} clusters={}",
                 nodes, clusters
             ));
-            let (mode, query) = self.effective_search();
-            if matches!(mode, LiftMode::Nodes | LiftMode::Clusters)
-                || (mode == LiftMode::General && !query.trim().is_empty())
-            {
+            let (mode, _) = self.effective_search();
+            if matches!(
+                mode,
+                LiftMode::General | LiftMode::Nodes | LiftMode::Clusters
+            ) {
                 self.refresh_results();
                 self.mark_redraw();
             }

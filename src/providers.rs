@@ -2,16 +2,15 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use halley_api::{
-    Client, ClusterDraft as ApiClusterDraft, ClusterDraftApp, ClusterTarget, ConnectOptions, Event,
-    EventTopic, NodeId, NodeKind, NodeSelector,
+    Client, ClusterDraft as ApiClusterDraft, ClusterDraftApp, ClusterTarget, ConnectOptions,
+    NodeId, NodeKind, NodeSelector,
 };
 
 use crate::config::{LiftConfig, default_config_path, resolved_halley_config_path};
+use crate::live::LiveUpdates;
 use crate::mode::LiftMode;
 use crate::model::{ClusterDraft, LiftAction, LiftResult, LiftResultKind, mode_allows};
 
@@ -29,8 +28,7 @@ pub struct ProviderIndex {
     apps: Vec<DesktopApp>,
     nodes: Vec<CachedNode>,
     clusters: Vec<CachedCluster>,
-    live_loaded: bool,
-    live_rx: Option<Receiver<(Vec<CachedNode>, Vec<CachedCluster>)>>,
+    live_updates: Option<LiveUpdates>,
     live_wake: Option<calloop::channel::Sender<()>>,
     terminal: String,
     terminal_icon_name: Option<String>,
@@ -81,8 +79,7 @@ impl ProviderIndex {
             apps,
             nodes: Vec::new(),
             clusters: Vec::new(),
-            live_loaded: false,
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal,
             terminal_icon_name,
@@ -90,7 +87,7 @@ impl ProviderIndex {
     }
 
     pub fn needs_live_refresh(&self) -> bool {
-        !self.live_loaded && self.live_rx.is_none()
+        self.live_updates.is_none()
     }
 
     pub fn set_live_waker(&mut self, wake: calloop::channel::Sender<()>) {
@@ -101,57 +98,13 @@ impl ProviderIndex {
         if !self.needs_live_refresh() {
             return;
         }
-        let (tx, rx) = mpsc::channel();
-        let wake = self.live_wake.clone();
-        thread::spawn(move || {
-            // Connect on this worker rather than the joined startup worker.
-            // A stalled API handshake must not delay the window.
-            let Ok(client) = Client::connect_with(api_options()) else {
-                let _ = tx.send((Vec::new(), Vec::new()));
-                if let Some(wake) = wake.as_ref() {
-                    let _ = wake.send(());
-                }
-                return;
-            };
-            let Ok(mut subscription) = client.subscribe([EventTopic::Nodes, EventTopic::Clusters])
-            else {
-                let _ = tx.send((load_nodes(&client), load_clusters(&client)));
-                if let Some(wake) = wake.as_ref() {
-                    let _ = wake.send(());
-                }
-                return;
-            };
-            let mut nodes = subscription.initial.nodes;
-            let mut clusters = subscription.initial.clusters;
-            send_live_update(&tx, wake.as_ref(), &nodes, &clusters);
-            while let Ok(event) = subscription.events.next_event() {
-                match event {
-                    Event::NodeAdded { node, .. } | Event::NodeChanged { node, .. } => {
-                        upsert(&mut nodes, node, |node| node.id);
-                    }
-                    Event::NodeRemoved { id, .. } => nodes.retain(|node| node.id != id),
-                    Event::ClusterAdded { cluster, .. } | Event::ClusterChanged { cluster, .. } => {
-                        upsert(&mut clusters, cluster, |cluster| cluster.id);
-                    }
-                    Event::ClusterRemoved { id, .. } => clusters.retain(|cluster| cluster.id != id),
-                    _ => continue,
-                }
-                send_live_update(&tx, wake.as_ref(), &nodes, &clusters);
-            }
-        });
-        self.live_rx = Some(rx);
+        self.live_updates = LiveUpdates::start(api_options(), self.live_wake.clone()).ok();
     }
 
     pub fn finish_live_refresh_if_ready(&mut self) -> Option<(usize, usize)> {
-        let rx = self.live_rx.as_ref()?;
-        let Ok((nodes, clusters)) = rx.try_recv() else {
-            return None;
-        };
-        self.nodes = nodes;
-        self.clusters = clusters;
-        self.live_loaded = true;
-        // Keep the receiver connected: the subscription continues to push
-        // typed deltas for the lifetime of Lift.
+        let snapshot = self.live_updates.as_mut()?.poll_latest()?;
+        self.nodes = cached_nodes(&snapshot.nodes);
+        self.clusters = cached_clusters(&snapshot.clusters);
         Some((self.nodes.len(), self.clusters.len()))
     }
 
@@ -343,13 +296,6 @@ impl ProviderIndex {
     }
 }
 
-fn load_nodes(client: &Client) -> Vec<CachedNode> {
-    let Ok(live_nodes) = client.nodes(None) else {
-        return Vec::new();
-    };
-    cached_nodes(&live_nodes)
-}
-
 fn cached_nodes(live_nodes: &[halley_api::NodeInfo]) -> Vec<CachedNode> {
     let mut nodes = Vec::new();
     for node in live_nodes.iter().cloned() {
@@ -376,13 +322,6 @@ fn cached_nodes(live_nodes: &[halley_api::NodeInfo]) -> Vec<CachedNode> {
     nodes
 }
 
-fn load_clusters(client: &Client) -> Vec<CachedCluster> {
-    let Ok(live_clusters) = client.clusters(None) else {
-        return Vec::new();
-    };
-    cached_clusters(&live_clusters)
-}
-
 fn cached_clusters(live_clusters: &[halley_api::ClusterSummary]) -> Vec<CachedCluster> {
     let mut clusters = Vec::new();
     for cluster in live_clusters.iter().cloned() {
@@ -397,33 +336,6 @@ fn cached_clusters(live_clusters: &[halley_api::ClusterSummary]) -> Vec<CachedCl
         });
     }
     clusters
-}
-
-fn send_live_update(
-    sender: &mpsc::Sender<(Vec<CachedNode>, Vec<CachedCluster>)>,
-    wake: Option<&calloop::channel::Sender<()>>,
-    nodes: &[halley_api::NodeInfo],
-    clusters: &[halley_api::ClusterSummary],
-) {
-    if sender
-        .send((cached_nodes(nodes), cached_clusters(clusters)))
-        .is_ok()
-        && let Some(wake) = wake
-    {
-        let _ = wake.send(());
-    }
-}
-
-fn upsert<T, K: Eq>(values: &mut Vec<T>, value: T, key: impl Fn(&T) -> K) {
-    let value_key = key(&value);
-    if let Some(existing) = values
-        .iter_mut()
-        .find(|existing| key(existing) == value_key)
-    {
-        *existing = value;
-    } else {
-        values.push(value);
-    }
 }
 
 fn create_cluster_result(_query: &str) -> LiftResult {
@@ -956,6 +868,8 @@ mod api_tests {
     };
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
     use std::time::Instant;
 
     struct SocketFixture(PathBuf);
@@ -1256,8 +1170,7 @@ exec '\''/bin/zsh'\'' -i'"#
                 })
                 .collect(),
             clusters: Vec::new(),
-            live_loaded: true,
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal: String::new(),
             terminal_icon_name: None,
@@ -1295,8 +1208,7 @@ exec '\''/bin/zsh'\'' -i'"#
                 subtitle: "2 members on DP-1".into(),
                 search_text: "release 3 DP-1".to_ascii_lowercase(),
             }],
-            live_loaded: true,
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal: "kitty -e".into(),
             terminal_icon_name: None,
@@ -1549,8 +1461,7 @@ exec '\''/bin/zsh'\'' -i'"#
             apps: vec![app("kitty", "Kitty", "kitty", "kitty")],
             nodes: Vec::new(),
             clusters: Vec::new(),
-            live_loaded: true,
-            live_rx: None,
+            live_updates: None,
             live_wake: None,
             terminal: "foot -e".into(),
             terminal_icon_name: None,
