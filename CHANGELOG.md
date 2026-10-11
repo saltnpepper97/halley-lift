@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Limit Alt-number activation to the ten shortcut hints on painted, visible
+  result rows. Ignore shortcuts for hidden rows or stale targets, and keep
+  their mapping aligned with the displayed rows after scrolling or resizing.
 - Match retained result rows to their painted action and title before mouse or
   accessibility activation, so live updates cannot redirect a same-title row
   to a different node, app, cluster, command, or configuration file before repainting.

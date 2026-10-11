@@ -329,6 +329,11 @@ Mouse and accessibility activation verify that a retained row still has the
 action and title it was painted with. If live updates replace or reorder a
 same-title result, its old row waits for repainting before accepting activation.
 
+Alt-number shortcuts follow the hints on the painted visible rows. Alt+1 opens
+the first displayed row after scrolling, and Alt+0 opens the tenth only when
+it is visible. With eight rows displayed, Alt+9 and Alt+0 do nothing. Shortcuts
+also ignore a row whose target changed before repainting.
+
 ## UI and accessibility
 
 Halley UI provides Taffy layout, text shaping, icons, components, and software

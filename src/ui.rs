@@ -213,6 +213,18 @@ pub struct FontRenderer {
     tints: HashMap<(u64, [u8; 4]), Arc<ImageData>>,
 }
 impl FontRenderer {
+    /// Alt+1 through Alt+0 address the hints on the last painted visible rows.
+    pub fn alt_number_result(&self, offset: usize, results: &[LiftResult]) -> Option<usize> {
+        if offset >= 10 {
+            return None;
+        }
+        let (index, _, identity) = self.rows.get(offset)?;
+        results
+            .get(*index)
+            .filter(|result| identity.matches(result))
+            .map(|_| *index)
+    }
+
     /// Activations from the retained view must still identify the painted target.
     pub fn result_is_current(&self, index: usize, results: &[LiftResult]) -> bool {
         self.rows.iter().any(|(i, _, identity)| {
@@ -710,6 +722,86 @@ pub fn draw_palette(
 mod tests {
     use super::*;
     use crate::model::{LiftAction, LiftResultKind};
+
+    #[test]
+    fn alt_numbers_address_only_painted_visible_rows() {
+        let mut config = LiftConfig {
+            icons: false,
+            ..Default::default()
+        };
+        let input = ModeInputState {
+            mode: LiftMode::Apps,
+            query: "Editor".into(),
+        };
+        let draft = ClusterDraft::default();
+        let results: Vec<_> = (0..12)
+            .map(|index| LiftResult {
+                title: format!("Editor {index:02}"),
+                action: LiftAction::LaunchApp {
+                    app_id: format!("editor-{index}"),
+                },
+                ..error_test_results().remove(0)
+            })
+            .collect();
+        let mut renderer = FontRenderer::new("sans-serif").unwrap();
+        let mut icons = IconCache::new(&config);
+        assert_eq!(renderer.alt_number_result(0, &results), None);
+        for (visible, height, scroll_offset, painted) in [
+            (8, 664, 0, 8),
+            (8, 664, 4, 8),
+            (8, 294, 0, 2),
+            (8, 294, 10, 2),
+            (10, 980, 0, 10),
+            (12, 980, 0, 12),
+            (2, 664, 0, 2),
+            (8, 60, 0, 0),
+        ] {
+            config.visible_results = visible;
+            let view = View {
+                config: &config,
+                input: &input,
+                mode: LiftMode::Apps,
+                results: &results,
+                selected: scroll_offset,
+                scroll_offset,
+                draft: &draft,
+                status: None,
+                cursor_visible: true,
+            };
+            let mut pixels = vec![0; (config.width * height * 4) as usize];
+            draw_palette(
+                &mut pixels,
+                config.width,
+                height,
+                &mut renderer,
+                &mut icons,
+                view,
+            )
+            .unwrap();
+            assert_eq!(renderer.rows.len(), painted);
+            for offset in 0..12 {
+                let expected = (offset < painted && offset < 10).then_some(scroll_offset + offset);
+                assert_eq!(
+                    renderer.alt_number_result(offset, &results),
+                    expected,
+                    "visible={visible}, height={height}, scroll={scroll_offset}, shortcut={offset}"
+                );
+            }
+            if painted > 0 {
+                let mut changed = results.clone();
+                changed[scroll_offset].action = LiftAction::LaunchApp {
+                    app_id: "replacement-editor".into(),
+                };
+                assert_eq!(renderer.alt_number_result(0, &changed), None);
+                if painted > 1 {
+                    assert_eq!(
+                        renderer.alt_number_result(1, &changed),
+                        Some(scroll_offset + 1)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn stale_same_title_hits_reject_changed_targets_until_repaint() {
