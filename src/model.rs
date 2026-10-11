@@ -11,7 +11,7 @@ pub enum LiftResultKind {
     Term,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiftAction {
     LaunchApp { app_id: String },
     OpenCluster { id: u64 },
