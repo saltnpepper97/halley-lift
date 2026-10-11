@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow Space to stage or unstage the selected app or running node in cluster
+  mode with an empty search, without adding query text or launching the target.
 - Limit Alt-number activation to the ten shortcut hints on painted, visible
   result rows. Ignore shortcuts for hidden rows or stale targets, and keep
   their mapping aligned with the displayed rows after scrolling or resizing.

@@ -127,7 +127,9 @@ term journalctl -f | grep halley
 
 ## Cluster Drafts
 
-In `cluster` searches, `Space` stages or unstages the selected app or running node. This is side-effect-free. Outside cluster searches, Space is normal search text.
+In `cluster` searches, `Space` stages or unstages the selected app or running node,
+including when the search is empty. This does not launch or focus the target.
+Outside cluster searches, Space is normal search text.
 
 After at least one item is staged in cluster mode, `Ctrl+Enter` or activating `Create cluster: <query>` materializes the draft:
 
