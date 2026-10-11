@@ -960,12 +960,8 @@ impl LiftApp {
     }
 
     fn handle_text(&mut self, text: &str) {
-        let (mode, query) = self.effective_search();
-        if text == " "
-            && mode == LiftMode::Clusters
-            && !query.trim().is_empty()
-            && self.selected_is_stageable()
-        {
+        let (mode, _) = self.effective_search();
+        if text == " " && mode == LiftMode::Clusters && self.selected_is_stageable() {
             self.toggle_selected();
             return;
         }
