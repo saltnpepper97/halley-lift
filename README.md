@@ -23,6 +23,11 @@ install `base-devel`, `rust`, `wayland`, `fontconfig`, and `libxkbcommon`.
 Halley 0.8 is the intended companion for this version. Older compositor versions
 may not support newer actions such as **Show Halley basics**.
 
+Running-node focus and panning are handled by Halley. Compositor builds predating
+the [API retrieval fix](https://github.com/saltnpepper97/halley/pull/189) retain
+their previous retrieval behavior even when Lift is upgraded. The fix does not
+require a new public SDK or wire protocol.
+
 On compositors supporting `ext-background-effect-v1`, Lift sends a blur region
 matching its painted pixels, so blur follows rounded corners and excludes the
 transparent gap between a separated search bar and dropdown. The region updates
