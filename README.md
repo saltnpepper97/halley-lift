@@ -346,6 +346,12 @@ divider.
 
 App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
 
+SVG icons are rasterized directly at `icon-size`, including SVGs authored at a
+smaller size. When a theme supplies an undersized bitmap, Lift checks larger
+sizes in the same theme lookup before scaling it. Larger bitmaps are reduced
+with alpha-aware Lanczos filtering. If an app only supplies a small bitmap,
+its available source artwork still limits sharpness.
+
 App discovery searches `XDG_DATA_HOME/applications` first, falling back to
 `~/.local/share/applications` when `XDG_DATA_HOME` is empty, unset, or relative.
 It then searches `applications` beneath the absolute paths in `XDG_DATA_DIRS`,

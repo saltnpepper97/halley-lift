@@ -858,6 +858,8 @@ dependencies = [
  "halley-api",
  "halley-ipc",
  "halley-ui",
+ "image",
+ "resvg",
  "rune-cfg",
  "shlex",
  "smithay-client-toolkit",
