@@ -346,6 +346,12 @@ divider.
 
 App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
 
+SVG icons are rasterized directly at `icon-size`, including SVGs authored at a
+smaller size. When a theme supplies an undersized bitmap, Lift checks larger
+sizes in the same theme lookup before scaling it. Larger bitmaps are reduced
+with alpha-aware Lanczos filtering. If an app only supplies a small bitmap,
+its available source artwork still limits sharpness.
+
 App discovery searches `XDG_DATA_HOME/applications` first, falling back to
 `~/.local/share/applications` when `XDG_DATA_HOME` is empty, unset, or relative.
 It then searches `applications` beneath the absolute paths in `XDG_DATA_DIRS`,
@@ -401,8 +407,24 @@ drawing. Lift keeps its native Wayland layer surface and renders into the borrow
 BGRA shared-memory buffer; it does not introduce Skia or a second frame-sized copy.
 Existing `lift.rune` appearance settings and launcher shortcuts remain supported.
 
-Search editing supports Unicode graphemes, pointer positioning, selection,
-`Ctrl+A`, `Shift+Arrow`, `Ctrl+Arrow`, `Ctrl+Home`, `Ctrl+End`, and `Delete`.
+Search editing supports Unicode graphemes, pointer positioning, selection, and
+keyboard shortcuts that also work without dedicated Home/End keys:
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+A` / `Ctrl+E` | Move to the beginning / end of the input |
+| `Ctrl+B` / `Ctrl+F` | Move one character left / right |
+| `Ctrl+U` / `Ctrl+K` | Delete everything before / after the cursor |
+| `Ctrl+W` or `Ctrl+Backspace` | Delete the previous word |
+| `Ctrl+Delete` | Delete the next word |
+| `Ctrl+Arrow` | Move by word |
+| `Shift+Arrow` | Extend the selection |
+| `Ctrl+Home` / `Ctrl+End` | Move to the beginning / end of the input |
+| `Backspace` / `Delete` | Delete the previous / next character or selected text |
+
+Shift also extends selection with the cursor movement shortcuts, including
+`Ctrl+Shift+A` / `Ctrl+Shift+E`. `Ctrl+A` moves the cursor rather than selecting all.
+To clear the whole input from any cursor position, use `Ctrl+E` then `Ctrl+U`.
 Unmodified arrows and Home/End retain result navigation; Tab retains the Actions
 shortcut. Lift does not yet connect Wayland IME composition or clipboard shortcuts.
 

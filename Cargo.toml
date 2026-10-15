@@ -17,6 +17,8 @@ calloop = "0.14.4"
 calloop-wayland-source = "0.4.1"
 freedesktop-icons = "0.4.0"
 halley-api = "0.4.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+resvg = { version = "0.48.1", default-features = false }
 rune-cfg = "0.7.1"
 shlex = "2.0.1"
 smithay-client-toolkit = "0.20.0"

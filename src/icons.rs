@@ -56,7 +56,8 @@ enum IconLookup<'a> {
 
 type IconRaster = Arc<ImageData>;
 
-const ICON_PATH_CACHE_MAGIC: &str = "halley-lift-icon-paths-v1";
+// Re-resolve paths selected by the old lookup, which could retain undersized bitmaps.
+const ICON_PATH_CACHE_MAGIC: &str = "halley-lift-icon-paths-v2";
 const MISSING_ICON_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// Successful theme lookups are persisted by resolved theme and target size. Only positive
@@ -394,10 +395,56 @@ fn resolve_icon_path_direct(name: &str, theme: &str, target_size: u32) -> Option
         return Some(path.to_path_buf());
     }
     let lookup_name = icon_lookup_name(name);
-    freedesktop_icons::lookup(lookup_name)
-        .with_size(u16::try_from(target_size).unwrap_or(u16::MAX))
-        .with_theme(theme)
-        .find()
+    resolve_sized_icon(target_size, |size| {
+        freedesktop_icons::lookup(lookup_name)
+            .with_size(size)
+            .with_theme(theme)
+            .force_svg()
+            .find()
+    })
+}
+
+/// Keep the normal theme lookup unless it supplies an undersized bitmap. Probe
+/// larger sizes through the same resolver, without walking or indexing the icon tree.
+fn resolve_sized_icon(
+    target_size: u32,
+    mut lookup: impl FnMut(u16) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let target_size = target_size.clamp(1, 4096);
+    let mut size = target_size;
+    let mut best = None;
+    let mut best_dimension = 0;
+    loop {
+        if let Some(path) = lookup(size as u16) {
+            if is_svg(&path) {
+                return Some(path);
+            }
+            let dimension = image::ImageReader::open(&path)
+                .ok()
+                .and_then(|reader| reader.with_guessed_format().ok())
+                .and_then(|reader| reader.into_dimensions().ok())
+                .map(|(width, height)| width.max(height))
+                .unwrap_or(0);
+            if dimension >= target_size {
+                return Some(path);
+            }
+            if best.is_none() || dimension > best_dimension {
+                best = Some(path);
+                best_dimension = dimension;
+            }
+        } else if best.is_none() {
+            return None;
+        }
+        if size == 4096 {
+            return best;
+        }
+        size = (size * 2).min(4096);
+    }
+}
+
+fn is_svg(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
 }
 
 /// Desktop icon identifiers commonly contain dots (for example,
@@ -423,10 +470,66 @@ fn icon_lookup_name(name: &str) -> &str {
 }
 
 fn load_icon(path: &Path, target_size: u32) -> Option<IconRaster> {
-    ImageData::load(path, target_size).ok().map(Arc::new)
+    if is_svg(path) {
+        return render_svg_data(&fs::read(path).ok()?, Some(path), target_size);
+    }
+    let mut reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let mut pixels = reader.decode().ok()?.into_rgba8();
+    // Filter premultiplied pixels so transparent edges do not acquire dark halos.
+    for pixel in pixels.pixels_mut() {
+        for channel in 0..3 {
+            pixel[channel] = ((u16::from(pixel[channel]) * u16::from(pixel[3]) + 127) / 255) as u8;
+        }
+    }
+    let target_size = target_size.clamp(1, 4096);
+    let dimension = pixels.width().max(pixels.height());
+    if dimension > target_size {
+        let width = (u64::from(pixels.width()) * u64::from(target_size) / u64::from(dimension))
+            .max(1) as u32;
+        let height = (u64::from(pixels.height()) * u64::from(target_size) / u64::from(dimension))
+            .max(1) as u32;
+        pixels = image::imageops::resize(
+            &pixels,
+            width,
+            height,
+            image::imageops::FilterType::Lanczos3,
+        );
+        // Lanczos ringing can exceed alpha; retain the premultiplied invariant.
+        for pixel in pixels.pixels_mut() {
+            for channel in 0..3 {
+                pixel[channel] = pixel[channel].min(pixel[3]);
+            }
+        }
+    }
+    ImageData::from_rgba(pixels.width(), pixels.height(), pixels.into_raw().into())
+        .ok()
+        .map(Arc::new)
 }
-fn render_svg_data(data: &[u8], _path: Option<&Path>, size: u32) -> Option<IconRaster> {
-    ImageData::from_svg(data, size).ok().map(Arc::new)
+fn render_svg_data(data: &[u8], path: Option<&Path>, size: u32) -> Option<IconRaster> {
+    let options = resvg::usvg::Options {
+        resources_dir: path.and_then(Path::parent).map(Path::to_path_buf),
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_data(data, &options).ok()?;
+    let original = tree.size();
+    let scale = size.clamp(1, 4096) as f32 / original.width().max(original.height());
+    let width = (original.width() * scale).round().max(1.0) as u32;
+    let height = (original.height() * scale).round().max(1.0) as u32;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    ImageData::from_rgba(width, height, pixmap.take().into())
+        .ok()
+        .map(Arc::new)
 }
 impl IconCache {
     pub(super) fn result_icon(
@@ -499,6 +602,131 @@ mod tests {
         );
         assert_eq!(icon_lookup_name("firefox.png"), "firefox");
         assert_eq!(icon_lookup_name("symbolic-icon.SVG"), "symbolic-icon");
+    }
+
+    #[test]
+    fn small_svg_is_rasterized_at_the_requested_size_with_its_aspect_ratio() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"><path d="M0 8 L16 0 L16 8 Z" fill="white"/></svg>"#;
+        for (size, expected) in [(28, (28, 14)), (8, (8, 4))] {
+            let icon = render_svg_data(svg, None, size).unwrap();
+            assert_eq!((icon.width(), icon.height()), expected);
+            assert!(
+                icon.pixels()
+                    .chunks_exact(4)
+                    .any(|p| p[3] > 0 && p[3] < 255)
+            );
+        }
+    }
+
+    struct RasterFixture(PathBuf);
+
+    impl RasterFixture {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "halley-lift-raster-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn save(&self, name: &str, pixels: image::RgbaImage) -> PathBuf {
+            let path = self.0.join(name);
+            pixels.save(&path).unwrap();
+            path
+        }
+    }
+
+    impl Drop for RasterFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn undersized_bitmap_lookup_selects_a_larger_source_and_remains_bounded() {
+        let fixture = RasterFixture::new();
+        let small = fixture.save("small.png", image::RgbaImage::new(16, 16));
+        let large = fixture.save("large.png", image::RgbaImage::new(64, 64));
+        let mut requested = Vec::new();
+        let chosen = resolve_sized_icon(28, |size| {
+            requested.push(size);
+            Some(if size < 64 {
+                small.clone()
+            } else {
+                large.clone()
+            })
+        });
+        assert_eq!(chosen, Some(large));
+        assert_eq!(requested, vec![28, 56, 112]);
+
+        requested.clear();
+        assert_eq!(
+            resolve_sized_icon(28, |size| {
+                requested.push(size);
+                Some(small.clone())
+            }),
+            Some(small)
+        );
+        assert_eq!(requested.last(), Some(&4096));
+        assert!(requested.len() <= 9);
+
+        requested.clear();
+        assert!(
+            resolve_sized_icon(28, |size| {
+                requested.push(size);
+                None
+            })
+            .is_none()
+        );
+        assert_eq!(requested, vec![28]);
+    }
+
+    #[test]
+    fn bitmap_resampling_preserves_transparent_edges_and_aspect_ratio() {
+        let fixture = RasterFixture::new();
+        let pixels = image::RgbaImage::from_fn(64, 32, |x, _| {
+            if x < 31 {
+                image::Rgba([255, 255, 255, 255])
+            } else {
+                image::Rgba([255, 0, 0, 0])
+            }
+        });
+        let path = fixture.save("edge.png", pixels);
+        let icon = load_icon(&path, 28).unwrap();
+        assert_eq!((icon.width(), icon.height()), (28, 14));
+        assert!(
+            icon.pixels()
+                .chunks_exact(4)
+                .any(|p| p[3] > 0 && p[3] < 255)
+        );
+        for pixel in icon.pixels().chunks_exact(4) {
+            // Invisible red pixels must not bleed into the filtered white edge.
+            assert_eq!(pixel[0], pixel[1]);
+            assert_eq!(pixel[1], pixel[2]);
+            assert!(pixel[0] <= pixel[3]);
+        }
+    }
+
+    #[test]
+    fn old_path_cache_does_not_retain_undersized_lookup_results() {
+        let fixture = RasterFixture::new();
+        let icon = fixture.save("small.png", image::RgbaImage::new(16, 16));
+        let file = fixture.0.join("paths");
+        fs::write(
+            &file,
+            format!(
+                "halley-lift-icon-paths-v1\n{}\t{}\n",
+                encode_hex(b"app"),
+                encode_hex(icon.as_os_str().as_bytes())
+            ),
+        )
+        .unwrap();
+        assert!(IconPathCache::load_from_file(file).get("app").is_none());
     }
 
     #[test]
