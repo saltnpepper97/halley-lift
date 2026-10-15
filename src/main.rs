@@ -8,6 +8,7 @@ mod activation;
 mod blur;
 mod config;
 mod desktop_exec;
+mod editing;
 mod hover_scroll;
 mod icons;
 mod instance;
@@ -1055,31 +1056,20 @@ impl LiftApp {
             }
             return;
         }
-        let edit_key = match event.keysym {
-            Keysym::Delete => Some(halley_ui::input::Key::Delete),
-            Keysym::Left if self.modifiers.shift || self.modifiers.ctrl => {
-                Some(halley_ui::input::Key::Left)
-            }
-            Keysym::Right if self.modifiers.shift || self.modifiers.ctrl => {
-                Some(halley_ui::input::Key::Right)
-            }
-            Keysym::Home if self.modifiers.ctrl => Some(halley_ui::input::Key::Home),
-            Keysym::End if self.modifiers.ctrl => Some(halley_ui::input::Key::End),
-            Keysym::a | Keysym::A if self.modifiers.ctrl => Some(halley_ui::input::Key::A),
-            _ => None,
-        };
-        if let Some(key) = edit_key {
-            self.input.query = self.font.edit(
-                &self.input.query,
-                halley_ui::input::InputEvent::KeyDown {
-                    key,
-                    modifiers: halley_ui::input::Modifiers {
-                        shift: self.modifiers.shift,
-                        control: self.modifiers.ctrl,
-                        alt: self.modifiers.alt,
-                    },
-                },
-            );
+        if event.keysym == Keysym::BackSpace
+            && self.input.query.is_empty()
+            && !self.modifiers.alt
+            && !self.modifiers.logo
+        {
+            self.input.remove_badge();
+            self.reset_cursor_blink();
+            self.refresh_results_typed();
+            return;
+        }
+        if let Some(edit_event) =
+            editing::key_event(event.keysym, self.modifiers, self.input.query.len())
+        {
+            self.input.query = self.font.edit(&self.input.query, edit_event);
             self.reset_cursor_blink();
             self.refresh_results_typed();
             return;
@@ -1098,21 +1088,6 @@ impl LiftApp {
                     self.input.query = format!("action {}", self.input.query.trim_start());
                 }
                 self.input.mode = LiftMode::General;
-                self.reset_cursor_blink();
-                self.refresh_results_typed();
-            }
-            Keysym::BackSpace => {
-                if self.input.query.is_empty() {
-                    self.input.remove_badge();
-                } else {
-                    self.input.query = self.font.edit(
-                        &self.input.query,
-                        halley_ui::input::InputEvent::KeyDown {
-                            key: halley_ui::input::Key::Backspace,
-                            modifiers: halley_ui::input::Modifiers::default(),
-                        },
-                    );
-                }
                 self.reset_cursor_blink();
                 self.refresh_results_typed();
             }

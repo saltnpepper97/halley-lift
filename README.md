@@ -407,8 +407,24 @@ drawing. Lift keeps its native Wayland layer surface and renders into the borrow
 BGRA shared-memory buffer; it does not introduce Skia or a second frame-sized copy.
 Existing `lift.rune` appearance settings and launcher shortcuts remain supported.
 
-Search editing supports Unicode graphemes, pointer positioning, selection,
-`Ctrl+A`, `Shift+Arrow`, `Ctrl+Arrow`, `Ctrl+Home`, `Ctrl+End`, and `Delete`.
+Search editing supports Unicode graphemes, pointer positioning, selection, and
+keyboard shortcuts that also work without dedicated Home/End keys:
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+A` / `Ctrl+E` | Move to the beginning / end of the input |
+| `Ctrl+B` / `Ctrl+F` | Move one character left / right |
+| `Ctrl+U` / `Ctrl+K` | Delete everything before / after the cursor |
+| `Ctrl+W` or `Ctrl+Backspace` | Delete the previous word |
+| `Ctrl+Delete` | Delete the next word |
+| `Ctrl+Arrow` | Move by word |
+| `Shift+Arrow` | Extend the selection |
+| `Ctrl+Home` / `Ctrl+End` | Move to the beginning / end of the input |
+| `Backspace` / `Delete` | Delete the previous / next character or selected text |
+
+Shift also extends selection with the cursor movement shortcuts, including
+`Ctrl+Shift+A` / `Ctrl+Shift+E`. `Ctrl+A` moves the cursor rather than selecting all.
+To clear the whole input from any cursor position, use `Ctrl+E` then `Ctrl+U`.
 Unmodified arrows and Home/End retain result navigation; Tab retains the Actions
 shortcut. Lift does not yet connect Wayland IME composition or clipboard shortcuts.
 
