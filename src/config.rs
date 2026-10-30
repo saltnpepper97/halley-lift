@@ -343,10 +343,10 @@ impl CompatibleConfig {
     where
         T: TryFrom<rune_cfg::Value, Error = rune_cfg::RuneError>,
     {
-        if let Some(path) = current_path(legacy) {
-            if let Some(value) = self.0.get_optional(path)? {
-                return Ok(Some(value));
-            }
+        if let Some(path) = current_path(legacy)
+            && let Some(value) = self.0.get_optional(path)?
+        {
+            return Ok(Some(value));
         }
         self.0.get_optional(legacy)
     }
