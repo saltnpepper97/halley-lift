@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+Planned release: 0.4.0.
+
 ### Added
 - Gently reveal ellipsized result titles and descriptions on the highlighted
   row for keyboard and mouse selection, with a

@@ -2,7 +2,12 @@
 
 Halley Lift is a standalone command palette for Halley. It is built from the `halley-lift` crate, installs as the `halley-lift` binary, and uses the public `halley-api` SDK for compositor queries, actions, cluster drafts, and live updates.
 
+Version 0.4.0 is in preparation. See the [changelog](CHANGELOG.md#unreleased)
+for the planned release notes.
+
 ## Install
+
+Install the released 0.3.0 version:
 
 ```sh
 cargo install halley-lift --version 0.3.0 --locked
