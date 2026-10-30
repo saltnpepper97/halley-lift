@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+All notable changes to this project will be documented in this file.
 
-- Keep application-provided animated node titles live when subscriptions are
-  unavailable or incompatible, using a persistent 100ms polling fallback that
-  repaints only changed snapshots. Retain the selected target across live updates.
+## [Unreleased]
+
+Planned release: 0.4.0.
+
+### Added
 - Gently reveal ellipsized result titles and descriptions on the highlighted
   row for keyboard and mouse selection, with a
   configurable delay, speed, endpoint pause, and fade/ease timing. Keep icons,
@@ -12,11 +14,36 @@
   scrolling progress across live title changes and fade back when selection
   changes. Scroll smoothly back and forth with eased reversals and pauses at
   both ends, repeating while the row remains highlighted.
+- Add keyboard-oriented search editing: Ctrl+A/E for line boundaries,
+  Ctrl+B/F for character movement, Ctrl+U/K for deletion to line boundaries,
+  Ctrl+W or Ctrl+Backspace for the previous word, and Ctrl+Delete for the next
+  word. Support Ctrl+Arrow word movement and Shift selection with Unicode-safe
+  editing.
+- Clip backdrop blur to Lift's painted shape, including rounded corners and
+  transparent dropdown gaps, using the optional Wayland background-effect protocol.
+
+### Changed
+- Organize Lift configuration into top-level behavior, search, position, icons,
+  layout, typography, text-scroll, colors, rounding, border, search-icon, and
+  cursor blocks. Keep old `lift:` paths supported; new paths win if both exist.
+  Gathered themes should use the same paths as the settings they override.
 - Remove unused selection-marker space outside cluster search, bringing result
   icons closer to the left edge. Make results and row insets, content and text
   gaps, cluster marker size, search gap, draft inset, bottom gap, and error-text
   padding configurable. Allow zero padding and gaps; retain inherited results
   spacing for existing configs. Document the settings in defaults and examples.
+- Use matching 12px search, panel, and dropdown corner radii in the built-in
+  defaults, first-run configuration, and examples, so expanded results and
+  "No results" have the same outer rounding at the top and bottom.
+
+### Fixed
+- Keep application-provided animated node titles live when subscriptions are
+  unavailable or incompatible, using a persistent 100ms polling fallback that
+  repaints only changed snapshots. Retain the selected target across live updates.
+- Render SVG app icons at the configured `icon-size`, prefer larger bitmap
+  sources when smaller ones would be stretched, and downsample with alpha-aware
+  filtering. Invalidate cached icon paths that may still point to undersized
+  assets.
 - Dismiss on Escape release after consuming its complete press/release pair,
   so the window regaining focus does not inherit a held Escape and leave
   browser video fullscreen. Handle focus and keyboard removal during dismissal.
@@ -26,9 +53,6 @@
 - Restore the 1px separator between connected search and dropdown chrome,
   including "No results" and action errors. Honor the existing `colors.divider`
   setting; a fully transparent color hides the line.
-- Use matching 12px search, panel, and dropdown corner radii in the built-in
-  defaults, first-run configuration, and examples, so expanded results and
-  "No results" have the same outer rounding at the top and bottom.
 - Allow Space to stage or unstage the selected app or running node in cluster
   mode with an empty search, without adding query text or launching the target.
 - Limit Alt-number activation to the ten shortcut hints on painted, visible
@@ -63,36 +87,46 @@
 - Keep painting at the compositor's granted size on small or scaled outputs,
   including when a larger dropdown cannot fit. Show fewer complete rows instead
   of squeezing their text, and wait for resize processing before painting new content.
-- Clip backdrop blur to Lift's painted shape, including rounded corners and
-  transparent dropdown gaps, using the optional Wayland background-effect protocol.
 
 ## [0.3.0](https://github.com/saltnpepper97/halley-lift/releases/tag/v0.3.0)
 
+### Added
+- Add Unicode search editing, selection, and an optional desktop accessibility bridge.
+
+### Changed
 - Move Lift from the Halley workspace into its own repository and release cycle.
 - Replace custom rasterization, font handling, and layout with Halley UI and Taffy.
 - Keep direct Wayland shared-memory buffers, providers, cluster drafts, icon workers,
   configuration, pointer behavior, and launcher shortcuts.
-- Add Unicode search editing, selection, and an optional desktop accessibility bridge.
 - Use the published Halley API 0.4 and document standalone installation.
 
 ## [0.2.1](https://github.com/saltnpepper97/halley/releases/tag/halley-lift-v0.2.1)
 
+### Added
+- Bundle a font-independent cluster selection marker.
+
+### Changed
+- Accompany Halley 0.7.0 while retaining the public Halley API 0.3.
+
+### Fixed
 - Restore and harden Freedesktop app-icon lookup and caching.
 - Dismiss on outside clicks while allowing the underlying click through.
 - Improve search-text, caret, and glyph alignment.
-- Bundle a font-independent cluster selection marker.
-- Accompany Halley 0.7.0 while retaining the public Halley API 0.3.
 
 ## [0.2.0](https://github.com/saltnpepper97/halley/releases/tag/halley-lift-v0.2.0)
 
+### Changed
 - Port compositor queries, actions, cluster drafts, and live updates to the public
   Halley API 0.3 SDK; target Halley 0.6.
+
+### Fixed
 - Resolve generic system font families such as `sans-serif` correctly.
 - Keep the first result selected while typing, and require real pointer motion
   before hover can change the selection.
 
 ## [0.1.0](https://github.com/saltnpepper97/halley/tree/halley-lift-v0.1.0/crates/halley-lift)
 
+### Added
 - Provide a self-contained Wayland shared-memory launcher for apps, running
   nodes, clusters, actions, configuration files, and terminal commands.
 - Add provider search prefixes, keyboard and pointer navigation, and ranking
