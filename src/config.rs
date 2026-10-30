@@ -324,13 +324,132 @@ impl LiftModeConfig {
     }
 }
 
+// New paths take precedence; legacy paths keep existing files and gathered themes working.
+struct CompatibleConfig(RuneConfig);
+
+impl CompatibleConfig {
+    fn get_or<T>(&self, legacy: &str, default: T) -> T
+    where
+        T: TryFrom<rune_cfg::Value, Error = rune_cfg::RuneError>,
+    {
+        let default = self.0.get_or(legacy, default);
+        match current_path(legacy) {
+            Some(path) => self.0.get_or(path, default),
+            None => default,
+        }
+    }
+
+    fn get_optional<T>(&self, legacy: &str) -> Result<Option<T>, rune_cfg::RuneError>
+    where
+        T: TryFrom<rune_cfg::Value, Error = rune_cfg::RuneError>,
+    {
+        if let Some(path) = current_path(legacy) {
+            if let Some(value) = self.0.get_optional(path)? {
+                return Ok(Some(value));
+            }
+        }
+        self.0.get_optional(legacy)
+    }
+}
+
+fn current_path(legacy: &str) -> Option<&'static str> {
+    match legacy {
+        "lift.alt-number-jump" => Some("behavior.alt-number-jump"),
+        "lift.border.enabled" => Some("border.enabled"),
+        "lift.border.style" => Some("border.style"),
+        "lift.border.width" => Some("border.width"),
+        "lift.close-on-focus-loss" => Some("behavior.close-on-focus-loss"),
+        "lift.colors.accent" => Some("colors.accent"),
+        "lift.colors.alt-hint" => Some("colors.alt-hint"),
+        "lift.colors.badge" => Some("colors.badge"),
+        "lift.colors.danger" => Some("colors.danger"),
+        "lift.colors.divider" => Some("colors.divider"),
+        "lift.colors.dropdown" => Some("colors.dropdown"),
+        "lift.colors.dropdown-border" => Some("colors.dropdown-border"),
+        "lift.colors.hint" => Some("colors.hint"),
+        "lift.colors.icon" => Some("colors.icon"),
+        "lift.colors.panel" => Some("colors.panel"),
+        "lift.colors.panel-border" => Some("colors.panel-border"),
+        "lift.colors.row-selected" => Some("colors.row-selected"),
+        "lift.colors.search" => Some("colors.search"),
+        "lift.colors.search-icon" => Some("colors.search-icon"),
+        "lift.colors.subtext" => Some("colors.subtext"),
+        "lift.colors.text" => Some("colors.text"),
+        "lift.cursor.blink-ms" => Some("cursor.blink-ms"),
+        "lift.cursor.enabled" => Some("cursor.enabled"),
+        "lift.cursor.stop-blink-after-ms" => Some("cursor.stop-blink-after-ms"),
+        "lift.cursor.width" => Some("cursor.width"),
+        "lift.fuzzy" => Some("search.fuzzy"),
+        "lift.icon-size" => Some("icons.size"),
+        "lift.icon-theme" => Some("icons.theme"),
+        "lift.icons" => Some("icons.enabled"),
+        "lift.max-results" => Some("search.max-results"),
+        "lift.modes.actions" => Some("search.modes.actions"),
+        "lift.modes.apps" => Some("search.modes.apps"),
+        "lift.modes.clusters" => Some("search.modes.clusters"),
+        "lift.modes.config" => Some("search.modes.config"),
+        "lift.modes.nodes" => Some("search.modes.nodes"),
+        "lift.placeholder" => Some("search.placeholder"),
+        "lift.position.anchor" => Some("position.anchor"),
+        "lift.position.offset-x" => Some("position.offset-x"),
+        "lift.position.offset-y" => Some("position.offset-y"),
+        "lift.providers" => Some("search.providers"),
+        "lift.rounding.badge" => Some("rounding.badge"),
+        "lift.rounding.draft" => Some("rounding.draft"),
+        "lift.rounding.dropdown" => Some("rounding.dropdown"),
+        "lift.rounding.panel" => Some("rounding.panel"),
+        "lift.rounding.row" => Some("rounding.row"),
+        "lift.rounding.search" => Some("rounding.search"),
+        "lift.search-icon.enabled" => Some("search-icon.enabled"),
+        "lift.search-icon.side" => Some("search-icon.side"),
+        "lift.search-icon.size" => Some("search-icon.size"),
+        "lift.show-section-labels" => Some("search.show-section-labels"),
+        "lift.terminal" => Some("behavior.terminal"),
+        "lift.ui.badge-font-size" => Some("typography.badge-font-size"),
+        "lift.ui.draft-height" => Some("layout.draft.height"),
+        "lift.ui.draft-padding" => Some("layout.draft.padding"),
+        "lift.ui.dropdown-gap" => Some("layout.dropdown.gap"),
+        "lift.ui.dropdown-padding" => Some("layout.dropdown.padding"),
+        "lift.ui.font" => Some("typography.font"),
+        "lift.ui.footer-height" => Some("layout.results.footer-height"),
+        "lift.ui.hint-font-size" => Some("typography.hint-font-size"),
+        "lift.ui.hover-scroll" => Some("text-scroll.enabled"),
+        "lift.ui.hover-scroll-delay-ms" => Some("text-scroll.delay-ms"),
+        "lift.ui.hover-scroll-pause-ms" => Some("text-scroll.pause-ms"),
+        "lift.ui.hover-scroll-speed" => Some("text-scroll.speed"),
+        "lift.ui.hover-scroll-transition-ms" => Some("text-scroll.transition-ms"),
+        "lift.ui.marker-size" => Some("layout.row.cluster-marker-size"),
+        "lift.ui.padding" => Some("layout.search.padding"),
+        "lift.ui.results-bottom-gap" => Some("layout.results.bottom-gap"),
+        "lift.ui.results-padding" => Some("layout.results.padding"),
+        "lift.ui.row-content-gap" => Some("layout.row.content-gap"),
+        "lift.ui.row-gap" => Some("layout.row.gap"),
+        "lift.ui.row-height" => Some("layout.row.height"),
+        "lift.ui.row-padding" => Some("layout.row.padding"),
+        "lift.ui.row-text-gap" => Some("layout.row.text-gap"),
+        "lift.ui.search-font-size" => Some("typography.search-font-size"),
+        "lift.ui.search-gap" => Some("layout.search.icon-gap"),
+        "lift.ui.search-height" => Some("layout.search.height"),
+        "lift.ui.section-height" => Some("layout.results.section-height"),
+        "lift.ui.status-padding" => Some("layout.status.padding"),
+        "lift.ui.subtitle-font-size" => Some("typography.subtitle-font-size"),
+        "lift.ui.title-font-size" => Some("typography.title-font-size"),
+        "lift.ui.top-margin" => Some("position.top-margin"),
+        "lift.visible-results" => Some("search.visible-results"),
+        "lift.width" => Some("layout.width"),
+        _ => None,
+    }
+}
+
 impl LiftConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let cfg = RuneConfig::from_file(path)
-            .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+        let cfg = CompatibleConfig(
+            RuneConfig::from_file(path)
+                .map_err(|err| format!("failed to parse {}: {err}", path.display()))?,
+        );
         let mut out = Self::default();
         out.placeholder = cfg.get_or("lift.placeholder", out.placeholder.clone());
         out.width = cfg.get_or("lift.width", out.width).clamp(420, 1400);
@@ -756,6 +875,163 @@ end
         assert_eq!(config.ui.hover_scroll_speed, 8);
         assert_eq!(config.ui.hover_scroll_pause_ms, 0);
         assert_eq!(config.ui.hover_scroll_transition_ms, 50);
+    }
+
+    const LEGACY_PATHS: &[&str] = &[
+        "lift.alt-number-jump",
+        "lift.border.enabled",
+        "lift.border.style",
+        "lift.border.width",
+        "lift.close-on-focus-loss",
+        "lift.colors.accent",
+        "lift.colors.alt-hint",
+        "lift.colors.badge",
+        "lift.colors.danger",
+        "lift.colors.divider",
+        "lift.colors.dropdown",
+        "lift.colors.dropdown-border",
+        "lift.colors.hint",
+        "lift.colors.icon",
+        "lift.colors.panel",
+        "lift.colors.panel-border",
+        "lift.colors.row-selected",
+        "lift.colors.search",
+        "lift.colors.search-icon",
+        "lift.colors.subtext",
+        "lift.colors.text",
+        "lift.cursor.blink-ms",
+        "lift.cursor.enabled",
+        "lift.cursor.stop-blink-after-ms",
+        "lift.cursor.width",
+        "lift.fuzzy",
+        "lift.icon-size",
+        "lift.icon-theme",
+        "lift.icons",
+        "lift.max-results",
+        "lift.modes.actions",
+        "lift.modes.apps",
+        "lift.modes.clusters",
+        "lift.modes.config",
+        "lift.modes.nodes",
+        "lift.placeholder",
+        "lift.position.anchor",
+        "lift.position.offset-x",
+        "lift.position.offset-y",
+        "lift.providers",
+        "lift.rounding.badge",
+        "lift.rounding.draft",
+        "lift.rounding.dropdown",
+        "lift.rounding.panel",
+        "lift.rounding.row",
+        "lift.rounding.search",
+        "lift.search-icon.enabled",
+        "lift.search-icon.side",
+        "lift.search-icon.size",
+        "lift.show-section-labels",
+        "lift.terminal",
+        "lift.ui.badge-font-size",
+        "lift.ui.draft-height",
+        "lift.ui.draft-padding",
+        "lift.ui.dropdown-gap",
+        "lift.ui.dropdown-padding",
+        "lift.ui.font",
+        "lift.ui.footer-height",
+        "lift.ui.hint-font-size",
+        "lift.ui.hover-scroll",
+        "lift.ui.hover-scroll-delay-ms",
+        "lift.ui.hover-scroll-pause-ms",
+        "lift.ui.hover-scroll-speed",
+        "lift.ui.hover-scroll-transition-ms",
+        "lift.ui.marker-size",
+        "lift.ui.padding",
+        "lift.ui.results-bottom-gap",
+        "lift.ui.results-padding",
+        "lift.ui.row-content-gap",
+        "lift.ui.row-gap",
+        "lift.ui.row-height",
+        "lift.ui.row-padding",
+        "lift.ui.row-text-gap",
+        "lift.ui.search-font-size",
+        "lift.ui.search-gap",
+        "lift.ui.search-height",
+        "lift.ui.section-height",
+        "lift.ui.status-padding",
+        "lift.ui.subtitle-font-size",
+        "lift.ui.title-font-size",
+        "lift.ui.top-margin",
+        "lift.visible-results",
+        "lift.width",
+    ];
+
+    #[test]
+    fn new_paths_match_legacy_paths_and_take_precedence() {
+        fn snippet(path: &str, value: &str) -> String {
+            let parts: Vec<_> = path.split('.').collect();
+            let mut text = String::new();
+            for part in &parts[..parts.len() - 1] {
+                text.push_str(&format!("{part}:\n"));
+            }
+            text.push_str(&format!("{} {value}\n", parts[parts.len() - 1]));
+            for _ in &parts[..parts.len() - 1] {
+                text.push_str("end\n");
+            }
+            text
+        }
+
+        // Exercise every active setting with a non-default value through both
+        // formats. This also catches misspelled paths in the default template.
+        let mut blocks = Vec::new();
+        let mut count = 0;
+        for line in DEFAULT_CONFIG_TEMPLATE.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.starts_with('@') || line.is_empty() {
+                continue;
+            }
+            if line == "end" {
+                blocks.pop();
+            } else if let Some(block) = line.strip_suffix(':') {
+                blocks.push(block);
+            } else {
+                let (key, raw) = line.split_once(' ').unwrap();
+                let path = format!("{}.{}", blocks.join("."), key);
+                let legacy = LEGACY_PATHS
+                    .iter()
+                    .find(|old| current_path(old) == Some(path.as_str()))
+                    .unwrap_or_else(|| panic!("no legacy mapping for {path}"));
+                let value = if raw.starts_with('[') {
+                    "[\"config\"]"
+                } else if raw.starts_with("true") {
+                    "false"
+                } else if raw.starts_with("false") {
+                    "true"
+                } else if path == "position.anchor" {
+                    "\"top\""
+                } else if path == "border.style" {
+                    "\"inset\""
+                } else if path == "search-icon.side" {
+                    "\"right\""
+                } else if raw.starts_with('"') {
+                    "\"custom\""
+                } else if path == "layout.width" {
+                    "900"
+                } else {
+                    "21"
+                };
+                let old = load_text(&snippet(legacy, value)).unwrap();
+                let new = load_text(&snippet(&path, value)).unwrap();
+                assert_eq!(format!("{old:?}"), format!("{new:?}"), "{path}");
+                count += 1;
+            }
+        }
+        assert_eq!(count, LEGACY_PATHS.len());
+
+        let both = load_text("lift:\n  width 600\n  providers [\"apps\"]\nend\nlayout:\n  width 900\nend\nsearch:\n  providers []\nend\n").unwrap();
+        assert_eq!(both.width, 900);
+        assert!(both.providers.is_empty());
+        assert!(
+            load_text("lift:\n  providers [\"apps\"]\nend\nsearch:\n  providers 42\nend\n")
+                .is_err()
+        );
     }
 
     #[test]

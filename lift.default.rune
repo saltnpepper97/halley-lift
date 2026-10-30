@@ -1,106 +1,19 @@
 @description "Halley Lift configuration"
 
-lift:
-  placeholder "Search apps, nodes, clusters, actions..."
-  width 760
-  max-results 12
-  visible-results 8
-  fuzzy true # false = contiguous matching only
-  show-section-labels true
-  icons true
-  icon-size 28
-  icon-theme "auto"
-  # Deprecated compatibility no-op. Lift now resolves only requested icons.
-  icon-search-depth 5
-  terminal "x-terminal-emulator -e"
+behavior:
   close-on-focus-loss false
   alt-number-jump true
+  terminal "x-terminal-emulator -e"
+end
 
-  position:
-    anchor "center"
-    offset-x 0
-    offset-y 0
-  end
-
-  rounding:
-    panel 12
-    dropdown 12
-    search 12
-    row 12
-    badge 10
-    draft 10
-  end
-
-  colors:
-    panel "#151720ee" # Fallback when search/dropdown is empty or invalid.
-    panel-border "#2b3248cc"
-    dropdown "#151720ee"
-    dropdown-border "#2b3248cc"
-    search "#090b12d8"
-    row-selected "#2e4575ea"
-    divider "#2b324899" # 1px connected-panel separator; #00000000 hides it.
-    text "#f2f5ff"
-    subtext "#9ea7bf"
-    hint "#858fa8"
-    accent "#8fb5ff"
-    badge "#334875f2"
-    danger "#eb9a8f"
-    search-icon ""
-    icon ""
-    alt-hint ""
-  end
-
-  border:
-    enabled true
-    width 1
-    style "outline"
-  end
-
-  search-icon:
-    enabled true
-    side "left"
-    size 22
-  end
-
-  cursor:
-    enabled true
-    width 2
-    blink-ms 500
-    stop-blink-after-ms 5000
-  end
-
-  ui:
-    top-margin 96
-    padding 20
-    search-gap 12                  # Space between search glyph and text.
-    results-padding 20             # Horizontal inset of the results body.
-    row-padding 5                  # Horizontal inset inside each result row.
-    row-content-gap 16             # Space between marker, icon, text and hint.
-    row-text-gap 7                 # Space between title and description.
-    marker-size 18                 # Cluster selection marker, shown only in cluster mode.
-    draft-padding 14               # Horizontal inset inside the cluster draft.
-    results-bottom-gap 8           # Space below the last result.
-    status-padding 3               # Vertical space on each side of error text.
-    hover-scroll true              # Scroll overflowing text in the highlighted row.
-    hover-scroll-delay-ms 900       # Wait before starting.
-    hover-scroll-speed 30           # Pixels per second.
-    hover-scroll-pause-ms 1200      # Hold at each end before reversing.
-    hover-scroll-transition-ms 180  # Fade and ease duration.
-    dropdown-gap 0
-    dropdown-padding 10
-    search-height 60
-    draft-height 36
-    row-height 64
-    row-gap 6
-    section-height 22
-    footer-height 0
-    font "sans-serif"
-    search-font-size 22
-    badge-font-size 15
-    title-font-size 17
-    subtitle-font-size 13
-    hint-font-size 12
-  end
+search:
+  placeholder "Search apps, nodes, clusters, actions..."
+  fuzzy true # false = contiguous matching only
+  max-results 12
+  visible-results 8
+  show-section-labels true
+  # General search only; [] disables it.
+  providers ["apps" "clusters" "nodes" "actions"]
 
   # Enable prefixed searches independently of the general provider list.
   modes:
@@ -110,6 +23,122 @@ lift:
     actions true
     config true
   end
+end
 
-  providers ["apps" "clusters" "nodes" "actions"] # General search only; [] disables it.
+position:
+  anchor "center" # center | top | top-left | top-right | bottom | bottom-left | bottom-right
+  offset-x 0
+  offset-y 0
+  top-margin 96
+end
+
+icons:
+  enabled true
+  size 28
+  theme "auto"
+end
+
+layout:
+  width 760
+
+  search:
+    height 60
+    padding 20
+    icon-gap 12 # Space between search glyph and text.
+  end
+
+  dropdown:
+    gap 0
+    padding 10
+  end
+
+  results:
+    padding 20 # Horizontal inset of the results body.
+    bottom-gap 8
+    section-height 22
+    footer-height 0
+  end
+
+  row:
+    height 64
+    gap 6
+    padding 5
+    content-gap 16 # Space between marker, icon, text and hint.
+    text-gap 7 # Space between title and description.
+    cluster-marker-size 18
+  end
+
+  draft:
+    height 36
+    padding 14
+  end
+
+  status:
+    padding 3
+  end
+end
+
+typography:
+  font "sans-serif"
+  search-font-size 22
+  badge-font-size 15
+  title-font-size 17
+  subtitle-font-size 13
+  hint-font-size 12
+end
+
+# Scroll overflowing text in the highlighted row.
+text-scroll:
+  enabled true
+  delay-ms 900
+  speed 30 # Pixels per second.
+  pause-ms 1200
+  transition-ms 180
+end
+
+colors:
+  panel "#151720ee" # Fallback when search/dropdown is empty or invalid.
+  panel-border "#2b3248cc"
+  dropdown "#151720ee"
+  dropdown-border "#2b3248cc"
+  search "#090b12d8"
+  row-selected "#2e4575ea"
+  divider "#2b324899" # 1px connected-panel separator; #00000000 hides it.
+  text "#f2f5ff"
+  subtext "#9ea7bf"
+  hint "#858fa8"
+  accent "#8fb5ff"
+  badge "#334875f2"
+  danger "#eb9a8f"
+  search-icon "" # Empty follows hint.
+  icon "" # Empty follows accent.
+  alt-hint "" # Empty follows hint.
+end
+
+rounding:
+  panel 12
+  dropdown 12
+  search 12
+  row 12
+  badge 10
+  draft 10
+end
+
+border:
+  enabled true
+  width 1
+  style "outline" # outline or inset
+end
+
+search-icon:
+  enabled true
+  side "left"
+  size 22
+end
+
+cursor:
+  enabled true
+  width 2
+  blink-ms 500
+  stop-blink-after-ms 5000
 end
