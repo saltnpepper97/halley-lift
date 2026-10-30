@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-Planned release: 0.4.0.
+## [0.4.0](https://github.com/saltnpepper97/halley-lift/releases/tag/v0.4.0) - 2026-10-30
 
 ### Added
 - Gently reveal ellipsized result titles and descriptions on the highlighted
@@ -40,7 +40,7 @@ Planned release: 0.4.0.
 - Keep application-provided animated node titles live when subscriptions are
   unavailable or incompatible, using a persistent 100ms polling fallback that
   repaints only changed snapshots. Retain the selected target across live updates.
-- Render SVG app icons at the configured `icon-size`, prefer larger bitmap
+- Render SVG app icons at the configured `icons.size`, prefer larger bitmap
   sources when smaller ones would be stretched, and downsample with alpha-aware
   filtering. Invalidate cached icon paths that may still point to undersized
   assets.
