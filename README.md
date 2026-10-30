@@ -101,7 +101,7 @@ Halley owns that keybind and Lift owns its own window and appearance in
 
 ## Search Prefixes
 
-Lift's general search uses the providers listed in `lift.providers`. Prefixing the query with a provider name filters results without changing the search text into a badge.
+Lift's general search uses the providers listed in `search.providers`. Prefixing the query with a provider name filters results without changing the search text into a badge.
 
 Supported modes:
 
@@ -184,7 +184,7 @@ Known names are `apps`, `clusters`, `nodes`, `actions`, and `config`.
 
 The `modes` flags independently enable prefixed searches. For example, omitting
 `nodes` from `providers` removes running windows from general search while
-`modes.nodes true` keeps `node Firefox` available. A disabled mode returns no
+`search.modes.nodes true` keeps `node Firefox` available. A disabled mode returns no
 results. Cluster mode still offers apps and nodes to stage, regardless of the
 general provider list. `term` remains available separately. The default general
 provider list omits configuration files; the `config` prefix remains enabled.
@@ -193,23 +193,27 @@ provider list omits configuration files; the `config` prefix remains enabled.
 `colors.dropdown` is empty or invalid. Explicit search/dropdown colors override
 it, including their alpha; Lift does not paint a second background beneath them.
 
-Useful layout keys:
+The complete default configuration is:
 
 ```rune
-lift:
-  placeholder "Search apps, nodes, clusters, actions..."
-  width 760
-  max-results 40
-  visible-results 8
-  fuzzy true
-  icons true
-  icon-size 28
-  icon-theme "auto"
-  icon-search-depth 5
-  terminal "x-terminal-emulator -e"
+@description "Halley Lift configuration"
+
+behavior:
   close-on-focus-loss false
   alt-number-jump true
+  terminal "x-terminal-emulator -e"
+end
 
+search:
+  placeholder "Search apps, nodes, clusters, actions..."
+  fuzzy true # false = contiguous matching only
+  max-results 12
+  visible-results 8
+  show-section-labels true
+  # General search only; [] disables it.
+  providers ["apps" "clusters" "nodes" "actions"]
+
+  # Enable prefixed searches independently of the general provider list.
   modes:
     apps true
     clusters true
@@ -217,94 +221,133 @@ lift:
     actions true
     config true
   end
-  providers ["apps" "clusters" "nodes" "actions"]
+end
 
-  position:
-    anchor "center" # center | top | top-left | top-right | bottom | bottom-left | bottom-right
-    offset-x 0
-    offset-y 0
-  end
+position:
+  anchor "center" # center | top | top-left | top-right | bottom | bottom-left | bottom-right
+  offset-x 0
+  offset-y 0
+  top-margin 96
+end
 
-  rounding:
-    panel 12
-    dropdown 12
-    search 12
-    row 12
-    badge 10
-    draft 10
-  end
+icons:
+  enabled true
+  size 28
+  theme "auto"
+end
 
-  colors:
-    panel "#151720ee"
-    panel-border "#2b3248cc"
-    dropdown "#151720ee"
-    dropdown-border "#2b3248cc"
-    search "#090b12d8"
-    row-selected "#2e4575ea"
-    divider "#2b324899"
-    text "#f2f5ff"
-    subtext "#9ea7bf"
-    hint "#858fa8"
-    accent "#8fb5ff"
-    badge "#334875f2"
-    danger "#eb9a8f"
-    search-icon ""  # magnifier tint; empty = follow `hint`
-    icon ""         # result-list icons; empty = follow `accent`
-    alt-hint ""     # Alt+<n> jump labels; empty = follow `hint`
-  end
+layout:
+  width 760
 
-  border:
-    enabled true
-    width 1          # thickness in px
-    style "outline"  # "outline" wraps the whole app; "inset" borders only the results
-  end
-
-  search-icon:
-    enabled true
-    side "left"      # "left" or "right" of the search text
-    size 22
-  end
-
-  cursor:
-    enabled true
-    width 2
-    blink-ms 500
-    stop-blink-after-ms 5000
-  end
-
-  ui:
-    top-margin 96
+  search:
+    height 60
     padding 20
-    search-gap 12
-    results-padding 20
-    row-padding 5
-    row-content-gap 16
-    row-text-gap 7
-    marker-size 18
-    draft-padding 14
-    results-bottom-gap 8
-    status-padding 3
-    hover-scroll true
-    hover-scroll-delay-ms 900
-    hover-scroll-speed 30
-    hover-scroll-pause-ms 1200
-    hover-scroll-transition-ms 180
-    dropdown-gap 0
-    dropdown-padding 10
-    search-height 60
-    row-height 64
-    row-gap 6
-    footer-height 0
-    font "sans-serif"
-    search-font-size 22
-    title-font-size 17
-    subtitle-font-size 13
-    hint-font-size 12
+    icon-gap 12 # Space between search glyph and text.
   end
+
+  dropdown:
+    gap 0
+    padding 10
+  end
+
+  results:
+    padding 20 # Horizontal inset of the results body.
+    bottom-gap 8
+    section-height 22
+    footer-height 0
+  end
+
+  row:
+    height 64
+    gap 6
+    padding 5
+    content-gap 16 # Space between marker, icon, text and hint.
+    text-gap 7 # Space between title and description.
+    cluster-marker-size 18
+  end
+
+  draft:
+    height 36
+    padding 14
+  end
+
+  status:
+    padding 3
+  end
+end
+
+typography:
+  font "sans-serif"
+  search-font-size 22
+  badge-font-size 15
+  title-font-size 17
+  subtitle-font-size 13
+  hint-font-size 12
+end
+
+# Scroll overflowing text in the highlighted row.
+text-scroll:
+  enabled true
+  delay-ms 900
+  speed 30 # Pixels per second.
+  pause-ms 1200
+  transition-ms 180
+end
+
+colors:
+  panel "#151720ee" # Fallback when search/dropdown is empty or invalid.
+  panel-border "#2b3248cc"
+  dropdown "#151720ee"
+  dropdown-border "#2b3248cc"
+  search "#090b12d8"
+  row-selected "#2e4575ea"
+  divider "#2b324899" # 1px connected-panel separator; #00000000 hides it.
+  text "#f2f5ff"
+  subtext "#9ea7bf"
+  hint "#858fa8"
+  accent "#8fb5ff"
+  badge "#334875f2"
+  danger "#eb9a8f"
+  search-icon "" # Empty follows hint.
+  icon "" # Empty follows accent.
+  alt-hint "" # Empty follows hint.
+end
+
+rounding:
+  panel 12
+  dropdown 12
+  search 12
+  row 12
+  badge 10
+  draft 10
+end
+
+border:
+  enabled true
+  width 1
+  style "outline" # outline or inset
+end
+
+search-icon:
+  enabled true
+  side "left"
+  size 22
+end
+
+cursor:
+  enabled true
+  width 2
+  blink-ms 500
+  stop-blink-after-ms 5000
 end
 ```
 
-`max-results` controls how many results Lift computes. `visible-results` sets the
+Existing `lift:` configuration paths remain supported, including gathered files.
+When both a new path and its old equivalent are present, the new path wins.
+For a gathered theme to override the new `colors:` block, update the theme to
+use the top-level `colors:` block as well. Lift does not rewrite existing files.
+
+`search.max-results` controls how many results Lift computes. `search.visible-results` sets the
 maximum number of rows shown at once. When the compositor grants less space,
 Lift shows fewer complete rows; keyboard and wheel navigation scroll through the
 full result set.
@@ -313,17 +356,17 @@ Long result names and descriptions end with an ellipsis so icons and shortcut
 hints stay aligned. Accessible result names retain the full title.
 
 Selection markers reserve space only in cluster search. Normal results start
-at `ui.results-padding + ui.row-padding` from the panel's left edge, so unused
-marker space no longer pushes icons inward. `ui.padding` controls the search
-inset; `ui.results-padding` independently controls the results inset. If omitted
-from an existing config, `results-padding` inherits `padding`.
+at `layout.results.padding + layout.row.padding` from the panel's left edge.
+`layout.search.padding` controls the search inset. If results padding is omitted,
+it inherits the search padding for compatibility with existing configurations.
 
-`row-content-gap` separates the marker, icon, text, and shortcut hint;
-`row-text-gap` separates the title and description. `marker-size` controls the
-cluster marker (8–32px). `search-gap`, `draft-padding`, `results-bottom-gap`, and
-`status-padding` control their named spacing. All padding and gap settings accept
-zero. An omitted `results-bottom-gap` retains the previous `max(row-gap, 8)`
-behavior. These settings apply on the next Lift invocation.
+`layout.row.content-gap` separates the marker, icon, text, and shortcut hint;
+`layout.row.text-gap` separates the title and description. `layout.row.cluster-marker-size`
+controls the cluster marker (8–32px). `layout.search.icon-gap`,
+`layout.draft.padding`, `layout.results.bottom-gap`, and `layout.status.padding`
+control their named spacing. All padding and gap settings accept zero. An omitted
+`layout.results.bottom-gap` retains the previous `max(row gap, 8)` behavior.
+These settings apply on the next Lift invocation.
 
 The highlighted result reveals its full title and description inside their
 existing text areas, whether selected with the keyboard or by mouse hover.
@@ -332,8 +375,8 @@ at 30 pixels per second with eased starts and stops and a 1200ms pause at each
 end. Motion repeats while that row stays highlighted. Changing selection fades
 the previous row back to the ellipsis; icons and shortcut hints remain fixed.
 Text that fits does not scroll.
-Set `ui.hover-scroll false` to disable this. Adjust `hover-scroll-delay-ms`,
-`hover-scroll-speed`, `hover-scroll-pause-ms`, and `hover-scroll-transition-ms`
+Set `text-scroll.enabled false` to disable this. Adjust `text-scroll.delay-ms`,
+`text-scroll.speed`, `text-scroll.pause-ms`, and `text-scroll.transition-ms`
 to tune it. These settings also apply to keyboard selection. Live title changes
 retain scrolling progress for the same node.
 
@@ -346,12 +389,12 @@ when live updates reorder results.
 
 `colors.divider` controls the 1px line between the search box and its connected
 dropdown, including "No results" and action errors. Set it to `"#00000000"` to
-hide the line. A positive `ui.dropdown-gap` separates the panels and omits the
+hide the line. A positive `layout.dropdown.gap` separates the panels and omits the
 divider.
 
-App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
+App icons are read from `.desktop` `Icon=` entries and sent directly to bounded resolver/decode workers as their rows become visible. Lift never walks the global icon tree or builds an icon index. Worker completion wakes the Wayland event loop immediately, so decoded PNG, JPEG, and SVG icons appear on the next compositor frame. Missing icons fall back to built-in glyphs. `lift.icon-search-depth` remains accepted for config compatibility but is deprecated and ignored.
 
-SVG icons are rasterized directly at `icon-size`, including SVGs authored at a
+SVG icons are rasterized directly at `icons.size`, including SVGs authored at a
 smaller size. When a theme supplies an undersized bitmap, Lift checks larger
 sizes in the same theme lookup before scaling it. Larger bitmaps are reduced
 with alpha-aware Lanczos filtering. If an app only supplies a small bitmap,

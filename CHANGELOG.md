@@ -23,6 +23,10 @@ Planned release: 0.4.0.
   transparent dropdown gaps, using the optional Wayland background-effect protocol.
 
 ### Changed
+- Organize Lift configuration into top-level behavior, search, position, icons,
+  layout, typography, text-scroll, colors, rounding, border, search-icon, and
+  cursor blocks. Keep old `lift:` paths supported; new paths win if both exist.
+  Gathered themes should use the same paths as the settings they override.
 - Remove unused selection-marker space outside cluster search, bringing result
   icons closer to the left edge. Make results and row insets, content and text
   gaps, cluster marker size, search gap, draft inset, bottom gap, and error-text

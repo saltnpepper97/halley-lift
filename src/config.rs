@@ -1035,6 +1035,22 @@ end
     }
 
     #[test]
+    fn gathered_new_theme_overrides_new_color_settings() {
+        let dir = std::env::temp_dir().join(format!("lift-gather-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let theme = dir.join("theme.rune");
+        let config = dir.join("lift.rune");
+        std::fs::write(&theme, "colors:\n  panel \"#123456ff\"\nend\n").unwrap();
+        std::fs::write(
+            &config,
+            "gather \"theme.rune\"\ncolors:\n  panel \"#abcdef00\"\nend\n",
+        )
+        .unwrap();
+        assert_eq!(LiftConfig::load(&config).unwrap().colors.panel, "#123456ff");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn documented_templates_keep_default_settings() {
         for text in [
             DEFAULT_CONFIG_TEMPLATE,
