@@ -829,9 +829,9 @@ dependencies = [
 
 [[package]]
 name = "halley-api"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a605a132e29721747cc2ec67df87366fef91aa997e9ab54d70481c703c9b55fd"
+checksum = "41312e5647907610e5eb0fcad5b7a87c741222496b0259fcad0ce7784ee4a3dd"
 dependencies = [
  "halley-ipc",
  "serde",
@@ -839,9 +839,9 @@ dependencies = [
 
 [[package]]
 name = "halley-ipc"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6e510fe9420657a87b434c5b5fba748f9d539f0d50877837d8d657966bb55ce"
+checksum = "1d8f9601b1e769e2a699b0f11bd865f29d372efbd4fe204f2b81d5c2d14b17cf"
 dependencies = [
  "libc",
  "postcard",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "halley-lift"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "calloop",
  "calloop-wayland-source",

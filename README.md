@@ -6,10 +6,10 @@ See the [changelog](CHANGELOG.md) for release notes.
 
 ## Install
 
-Install the released 0.4.0 version:
+Install the released 0.4.1 version:
 
 ```sh
-cargo install halley-lift --version 0.4.0 --locked
+cargo install halley-lift --version 0.4.1 --locked
 ```
 
 Or build this repository:
@@ -24,7 +24,7 @@ cargo build --release --locked
 Lift needs a running Halley session, Wayland layer-shell support, a system font,
 and the native build dependencies for Wayland, Fontconfig, and xkbcommon. On Arch,
 install `base-devel`, `rust`, `wayland`, `fontconfig`, and `libxkbcommon`.
-Halley 0.8 is the intended companion for this version. Older compositor versions
+Halley 0.9 is the intended companion for this version. Older compositor versions
 may not support newer actions such as **Show Halley basics**.
 
 Running-node focus and panning are handled by Halley. Compositor builds predating
