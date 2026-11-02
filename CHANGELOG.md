@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-01
+
+### Fixed
+- Update the Halley API and IPC dependencies for Halley 0.9 and private IPC 28.
+  Live node and cluster subscriptions decode the current output snapshot,
+  retaining streamed updates instead of falling back to polling.
+
+
 ## [0.4.0](https://github.com/saltnpepper97/halley-lift/releases/tag/v0.4.0) - 2026-10-30
 
 ### Added
