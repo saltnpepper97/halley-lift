@@ -829,12 +829,15 @@ dependencies = [
 
 [[package]]
 name = "halley-api"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41312e5647907610e5eb0fcad5b7a87c741222496b0259fcad0ce7784ee4a3dd"
+checksum = "ac98853f8565b85a2c3ec96ca481c6190a250ff213f4d3f5dcc8b4f5d83eee7a"
 dependencies = [
  "halley-ipc",
  "serde",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
 ]
 
 [[package]]
@@ -856,7 +859,6 @@ dependencies = [
  "calloop-wayland-source",
  "freedesktop-icons",
  "halley-api",
- "halley-ipc",
  "halley-ui",
  "image",
  "resvg",
