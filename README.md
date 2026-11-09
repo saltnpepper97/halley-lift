@@ -6,13 +6,29 @@ See the [changelog](CHANGELOG.md) for release notes.
 
 ## Install
 
-Install the released 0.4.1 version:
+If you built Halley from current `main`, install Lift from `main` too:
+
+```sh
+cargo install --git https://github.com/saltnpepper97/halley-lift \
+  --branch main --locked --force halley-lift
+```
+
+Released Lift 0.4.1 lacks the new outside-click dismissal support required by
+current Halley `main`. The migration landed in [Halley PR #303](https://github.com/saltnpepper97/halley/pull/303)
+and [Lift PR #23](https://github.com/saltnpepper97/halley-lift/pull/23).
+Halley `main` still reports 0.9.2 and Lift `main` still reports 0.4.1, matching
+their releases, so version output alone cannot identify this migration; check
+that the source revisions include those changes. `--force` replaces an existing
+Lift installation even while its version number is unchanged. Ensure the
+installed binary is on your `PATH` and is the one your launcher command runs.
+
+For released Halley 0.9.2, install released Lift 0.4.1:
 
 ```sh
 cargo install halley-lift --version 0.4.1 --locked
 ```
 
-Or build this repository:
+Or build and run this repository directly:
 
 ```sh
 git clone https://github.com/saltnpepper97/halley-lift
