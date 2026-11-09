@@ -265,8 +265,7 @@ mod tests {
         if std::env::var_os(MARKER).is_some() {
             return false;
         }
-        // The SDK also resolves its default path when given an explicit path.
-        // Keep this environment requirement out of the parallel test process.
+        // Keep fixture environment and subprocess deadlines out of the parallel process.
         let fixture = Fixture::new();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test, "--nocapture"])

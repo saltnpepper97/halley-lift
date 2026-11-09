@@ -1056,8 +1056,7 @@ mod api_tests {
         if std::env::var_os(MARKER).is_some() {
             return false;
         }
-        // The SDK resolves its default path even with an explicit socket path.
-        // Keep that environment requirement local to this test's child process.
+        // Keep fixture environment and subprocess deadlines local to this test.
         let fixture = SocketFixture::new();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test, "--nocapture"])
