@@ -9,7 +9,7 @@ use halley_api::{
     NodeId, NodeKind, NodeSelector,
 };
 
-use crate::config::{LiftConfig, LiftModeConfig, default_config_path, resolved_halley_config_path};
+use crate::config::{LiftConfig, LiftModeConfig, default_config_path, fallback_halley_config_path};
 use crate::desktop_exec::{self, unescape};
 use crate::live::LiveUpdates;
 use crate::mode::LiftMode;
@@ -34,6 +34,7 @@ pub struct ProviderIndex {
     live_wake: Option<calloop::channel::Sender<()>>,
     terminal: String,
     terminal_icon_name: Option<String>,
+    halley_config_path: Option<PathBuf>,
 }
 
 struct SearchPolicy {
@@ -118,6 +119,7 @@ impl ProviderIndex {
             live_wake: None,
             terminal,
             terminal_icon_name,
+            halley_config_path: None,
         }
     }
 
@@ -126,7 +128,9 @@ impl ProviderIndex {
             && (self.policy.modes.nodes
                 || self.policy.modes.clusters
                 || self.policy.provider_enabled("nodes")
-                || self.policy.provider_enabled("clusters"))
+                || self.policy.provider_enabled("clusters")
+                || self.policy.modes.config
+                || self.policy.provider_enabled("config"))
     }
 
     pub fn set_live_waker(&mut self, wake: calloop::channel::Sender<()>) {
@@ -142,6 +146,7 @@ impl ProviderIndex {
 
     pub fn finish_live_refresh_if_ready(&mut self) -> Option<(usize, usize)> {
         let snapshot = self.live_updates.as_mut()?.poll_latest()?;
+        self.halley_config_path = snapshot.config_path;
         self.nodes = cached_nodes(&snapshot.nodes);
         self.clusters = cached_clusters(&snapshot.clusters);
         Some((self.nodes.len(), self.clusters.len()))
@@ -181,7 +186,11 @@ impl ProviderIndex {
         if self.policy.includes_provider(ctx.mode, "config")
             && matches!(ctx.mode, LiftMode::General | LiftMode::Config)
         {
-            results.extend(search_config(ctx, self.policy.fuzzy));
+            results.extend(search_config(
+                ctx,
+                self.policy.fuzzy,
+                self.halley_config_path.as_deref(),
+            ));
         }
         if ctx.mode == LiftMode::Term {
             results.extend(self.search_term(ctx));
@@ -455,7 +464,11 @@ fn search_actions(ctx: &SearchContext, fuzzy: bool) -> Vec<LiftResult> {
         .collect()
 }
 
-fn search_config(ctx: &SearchContext, fuzzy: bool) -> Vec<LiftResult> {
+fn search_config(
+    ctx: &SearchContext,
+    fuzzy: bool,
+    halley_config_path: Option<&Path>,
+) -> Vec<LiftResult> {
     let configs = [
         (
             "lift config",
@@ -465,7 +478,11 @@ fn search_config(ctx: &SearchContext, fuzzy: bool) -> Vec<LiftResult> {
         (
             "halley config compositor config",
             "Halley config",
-            resolved_halley_config_path().display().to_string(),
+            halley_config_path
+                .map(Path::to_path_buf)
+                .unwrap_or_else(fallback_halley_config_path)
+                .display()
+                .to_string(),
         ),
     ];
     configs
@@ -992,10 +1009,8 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod api_tests {
     use super::*;
-    use halley_ipc::{
-        ControlRequest, HALLEY_API_VERSION, HALLEY_IPC_VERSION, Request, Response, ServerInfo,
-        decode_request, encode_response, read_frame_with_fds, write_frame_with_fds,
-    };
+    use halley_api::test_support::{Request, Response};
+    use halley_api::{HALLEY_API_VERSION, ServerInfo};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
@@ -1029,13 +1044,11 @@ mod api_tests {
     }
 
     fn request(stream: &UnixStream) -> Request {
-        let (bytes, fds) = read_frame_with_fds(stream, 0).unwrap();
-        assert!(fds.is_empty());
-        decode_request(&bytes).unwrap()
+        halley_api::test_support::request(stream).unwrap()
     }
 
     fn reply(stream: &UnixStream, response: Response) {
-        write_frame_with_fds(stream, &encode_response(&response).unwrap(), &[]).unwrap();
+        halley_api::test_support::reply(stream, response).unwrap();
     }
 
     fn run_in_private_runtime(test: &str) -> bool {
@@ -1043,8 +1056,7 @@ mod api_tests {
         if std::env::var_os(MARKER).is_some() {
             return false;
         }
-        // The SDK resolves its default path even with an explicit socket path.
-        // Keep that environment requirement local to this test's child process.
+        // Keep fixture environment and subprocess deadlines local to this test.
         let fixture = SocketFixture::new();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test, "--nocapture"])
@@ -1077,7 +1089,7 @@ mod api_tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
-            assert!(matches!(request(&stream), Request::Hello(_)));
+            assert!(matches!(request(&stream), Request::Hello { .. }));
             if stall_hello {
                 let _ = blocked.recv_timeout(Duration::from_secs(6));
                 return;
@@ -1087,23 +1099,19 @@ mod api_tests {
                 Response::Hello(ServerInfo {
                     compositor_version: "test".into(),
                     api_version: HALLEY_API_VERSION,
-                    ipc_protocol: HALLEY_IPC_VERSION,
                     capabilities: Vec::new(),
                 }),
             );
             let action = request(&stream);
             if let Some(expected) = focus_node {
                 assert!(
-                    matches!(action, Request::Node(halley_ipc::NodeRequest::Focus {
-                    selector: Some(halley_ipc::NodeSelector::Id(actual)), output: None,
-                }) if actual == expected),
+                    matches!(action, Request::FocusNode {
+                    selector: Some(NodeSelector::Id(actual)), output: None,
+                } if actual.get() == expected),
                     "{action:?}"
                 );
             } else {
-                assert!(matches!(
-                    action,
-                    Request::Control(ControlRequest::ShowBasics)
-                ));
+                assert!(matches!(action, Request::ShowBasics));
             }
             if stall_action {
                 let _ = blocked.recv_timeout(Duration::from_secs(6));
@@ -1367,11 +1375,31 @@ mod tests {
         index.policy.providers.clear();
         index.policy.modes.nodes = false;
         index.policy.modes.clusters = false;
+        index.policy.modes.config = false;
         assert!(!index.needs_live_refresh());
         index.start_live_refresh();
         assert!(index.live_updates.is_none());
         index.policy.modes.clusters = true;
         assert!(index.needs_live_refresh());
+    }
+
+    #[test]
+    fn config_search_uses_the_compositor_path_and_starts_background_discovery() {
+        let mut index = provider_index_with_every_provider();
+        index.policy.providers.clear();
+        index.policy.modes.nodes = false;
+        index.policy.modes.clusters = false;
+        index.policy.modes.config = true;
+        assert!(index.needs_live_refresh());
+        index.halley_config_path = Some("/custom/active-halley.rune".into());
+        let results = index.search(&context(LiftMode::Config, "halley"));
+        assert!(results.iter().any(|result| matches!(&result.action,
+            LiftAction::OpenConfig { path } if path == "/custom/active-halley.rune")));
+        index.halley_config_path = None;
+        let results = index.search(&context(LiftMode::Config, "halley"));
+        let fallback = fallback_halley_config_path().display().to_string();
+        assert!(results.iter().any(|result| matches!(&result.action,
+            LiftAction::OpenConfig { path } if path == &fallback)));
     }
 
     #[test]
@@ -1446,6 +1474,7 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: String::new(),
             terminal_icon_name: None,
+            halley_config_path: None,
         };
         let results = index.search(&SearchContext {
             mode: LiftMode::Clusters,
@@ -1494,6 +1523,7 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: "kitty -e".into(),
             terminal_icon_name: None,
+            halley_config_path: None,
         }
     }
 
@@ -1748,6 +1778,7 @@ exec '\''/bin/zsh'\'' -i'"#
             live_wake: None,
             terminal: "foot -e".into(),
             terminal_icon_name: None,
+            halley_config_path: None,
         };
         let draft = ClusterDraft {
             app_ids: vec!["kitty".into()],

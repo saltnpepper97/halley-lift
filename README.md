@@ -39,6 +39,21 @@ with the buffer when the panel grows or shrinks. Halley's layer rules still
 control whether blur is allowed; compositors without this extension retain their
 existing blur behavior.
 
+Lift owns launcher discovery, search/ranking, result presentation, configuration,
+shortcuts, and action selection. It builds its UI from `halley-ui` and invokes
+compositor operations through `halley-api`; the toolkit does not call compositor
+APIs. Tests use SDK fixtures rather than the private IPC codec.
+
+Current development builds use SDK 0.6.0's optional
+`halley-surface-dismissal-v1` interface. Lift watches its own layer surface and
+closes when notified of an outside left press. Halley keeps routing that click
+to the underlying target. The watch is limited to the mapped surface owning
+keyboard focus; it exposes no global pointer coordinates. Escape and configured
+focus-loss dismissal remain available when the optional interface is absent.
+Update Lift alongside compositor builds that remove the old launcher-specific
+outside-click rule. The compositor's selected configuration path arrives on the
+background API worker; offline sessions keep best-effort local path discovery.
+
 Lift is versioned independently of Halley. Its source and releases now live in
 this repository; it is no longer built by Halley's workspace.
 

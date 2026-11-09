@@ -8,6 +8,7 @@ mod activation;
 mod blur;
 mod config;
 mod desktop_exec;
+mod dismissal;
 mod editing;
 mod hover_scroll;
 mod icons;
@@ -127,6 +128,7 @@ fn run() -> Result<(), String> {
     let layer =
         layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(NAMESPACE), None);
     let blur = blur::BackgroundBlur::bind(&globals, &qh, layer.wl_surface());
+    let outside_dismissal = dismissal::OutsideDismissal::bind(&globals, &qh, layer.wl_surface());
     let width = config.width.max(420);
     let height = panel_height(&config) as u32;
     let (anchor, margins) = layer_position(&config);
@@ -247,6 +249,7 @@ fn run() -> Result<(), String> {
         pool,
         layer,
         blur,
+        outside_dismissal,
         display: conn.display(),
         qh: qh.clone(),
         loop_handle: loop_handle.clone(),
@@ -407,6 +410,7 @@ struct LiftApp {
     pool: SlotPool,
     layer: LayerSurface,
     blur: blur::BackgroundBlur,
+    outside_dismissal: dismissal::OutsideDismissal,
     display: wl_display::WlDisplay,
     qh: QueueHandle<LiftApp>,
     loop_handle: LoopHandle<'static, LiftApp>,
@@ -620,7 +624,10 @@ impl LiftApp {
 
     fn live_results_needed(&self) -> bool {
         let (mode, _) = self.effective_search();
-        matches!(mode, LiftMode::Nodes | LiftMode::Clusters)
+        matches!(
+            mode,
+            LiftMode::Nodes | LiftMode::Clusters | LiftMode::Config
+        )
     }
 
     fn draw(&mut self) -> Result<(), String> {
@@ -757,7 +764,7 @@ impl LiftApp {
             let (mode, _) = self.effective_search();
             if matches!(
                 mode,
-                LiftMode::General | LiftMode::Nodes | LiftMode::Clusters
+                LiftMode::General | LiftMode::Nodes | LiftMode::Clusters | LiftMode::Config
             ) {
                 self.refresh_results();
                 self.mark_redraw();

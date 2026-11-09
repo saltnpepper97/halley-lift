@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Own outside-click dismissal in Lift using the optional surface-bound protocol
+  from `halley-api` 0.6.0. Halley no longer needs a launcher-name special case.
+  Older compositors retain Escape and configured focus-loss dismissal.
+- Use the running compositor's API-selected configuration path on the background
+  worker, retaining existing offline path discovery without blocking search.
+- Exercise actions and live recovery through SDK test fixtures, removing Lift's
+  direct dependency on private IPC and its wire-version details.
+
 ## [0.4.1] - 2026-11-01
 
 ### Fixed

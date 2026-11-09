@@ -1,4 +1,5 @@
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,6 +14,7 @@ const SUBSCRIPTION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 pub struct LiveSnapshot {
     pub nodes: Vec<NodeInfo>,
     pub clusters: Vec<ClusterSummary>,
+    pub config_path: Option<PathBuf>,
 }
 
 pub struct LiveUpdates {
@@ -93,6 +95,7 @@ fn refresh(
     if cancelled(stop) {
         return Ok(());
     }
+    let config_path = client.config_path().ok().flatten();
     let mut previous_fallback = None;
     let mut subscription = loop {
         match client.subscribe([EventTopic::Nodes, EventTopic::Clusters]) {
@@ -101,13 +104,21 @@ fn refresh(
                 // Older or differently-versioned snapshots may not support a
                 // usable stream. Reuse the query connection for live titles,
                 // rather than sampling their animation once per second.
-                poll_fallback(&client, pending, wake, stop, &mut previous_fallback)?;
+                poll_fallback(
+                    &client,
+                    pending,
+                    wake,
+                    stop,
+                    &mut previous_fallback,
+                    config_path.clone(),
+                )?;
             }
         }
         if cancelled(stop) {
             return Ok(());
         }
     };
+    let config_path = subscription.initial.config_path.or(config_path);
     let mut nodes = subscription.initial.nodes;
     let mut clusters = subscription.initial.clusters;
     if cancelled(stop) {
@@ -119,6 +130,7 @@ fn refresh(
         LiveSnapshot {
             nodes: nodes.clone(),
             clusters: clusters.clone(),
+            config_path: config_path.clone(),
         },
     );
     loop {
@@ -143,6 +155,7 @@ fn refresh(
             LiveSnapshot {
                 nodes: nodes.clone(),
                 clusters: clusters.clone(),
+                config_path: config_path.clone(),
             },
         );
     }
@@ -154,6 +167,7 @@ fn poll_fallback(
     wake: Option<&calloop::channel::Sender<()>>,
     stop: &mpsc::Receiver<()>,
     previous: &mut Option<LiveSnapshot>,
+    config_path: Option<PathBuf>,
 ) -> halley_api::Result<()> {
     let retry_at = Instant::now() + SUBSCRIPTION_RETRY_INTERVAL;
     loop {
@@ -163,6 +177,7 @@ fn poll_fallback(
         let snapshot = LiveSnapshot {
             nodes: client.nodes(None)?,
             clusters: client.clusters(None)?,
+            config_path: config_path.clone(),
         };
         if cancelled(stop) {
             return Ok(());
@@ -201,15 +216,13 @@ fn upsert<T, K: Eq>(values: &mut Vec<T>, value: T, key: impl Fn(&T) -> K) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use halley_ipc::{
-        ApiEvent, ClusterLayoutKind, ClusterListResponse, ClusterOutputGroup, HALLEY_API_VERSION,
-        HALLEY_IPC_VERSION, NodeKind, NodeListResponse, NodeOutputGroup, NodeProtocolFamily,
-        NodeRole, NodeState, Request, Response, ServerError, ServerErrorKind, ServerInfo,
-        StateSnapshot, decode_request, encode_response, read_frame_with_fds, write_frame_with_fds,
+    use halley_api::test_support::{Request, Response};
+    use halley_api::{
+        ClusterLayout, Error, ErrorKind, HALLEY_API_VERSION, NodeKind, NodeProtocolFamily,
+        NodeRole, NodeState, ServerInfo, Snapshot,
     };
     use std::fs;
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
@@ -252,8 +265,7 @@ mod tests {
         if std::env::var_os(MARKER).is_some() {
             return false;
         }
-        // The SDK also resolves its default path when given an explicit path.
-        // Keep this environment requirement out of the parallel test process.
+        // Keep fixture environment and subprocess deadlines out of the parallel process.
         let fixture = Fixture::new();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test, "--nocapture"])
@@ -278,13 +290,11 @@ mod tests {
     }
 
     fn request(stream: &UnixStream) -> Request {
-        let (bytes, fds) = read_frame_with_fds(stream, 0).unwrap();
-        assert!(fds.is_empty());
-        decode_request(&bytes).unwrap()
+        halley_api::test_support::request(stream).unwrap()
     }
 
     fn reply(stream: &UnixStream, response: Response) {
-        write_frame_with_fds(stream, &encode_response(&response).unwrap(), &[]).unwrap();
+        halley_api::test_support::reply(stream, response).unwrap();
     }
 
     fn accept(listener: &UnixListener) -> UnixStream {
@@ -309,34 +319,36 @@ mod tests {
 
     fn subscribe(listener: &UnixListener) -> (UnixStream, UnixStream) {
         let control = accept(listener);
-        assert!(matches!(request(&control), Request::Hello(_)));
+        assert!(matches!(request(&control), Request::Hello { .. }));
         reply(
             &control,
             Response::Hello(ServerInfo {
                 compositor_version: "test".into(),
                 api_version: HALLEY_API_VERSION,
-                ipc_protocol: HALLEY_IPC_VERSION,
                 capabilities: Vec::new(),
             }),
         );
+        assert_eq!(request(&control), Request::ConfigPath);
+        reply(
+            &control,
+            Response::ConfigPath(Some("/custom/halley.rune".into())),
+        );
         let events = accept(listener);
-        let Request::Subscribe(subscription) = request(&events) else {
+        let Request::Subscribe {
+            api_version,
+            topics,
+        } = request(&events)
+        else {
             panic!("expected subscription");
         };
-        assert_eq!(subscription.api_version, HALLEY_API_VERSION);
-        assert_eq!(
-            subscription.topics,
-            vec![
-                halley_ipc::EventTopic::Nodes,
-                halley_ipc::EventTopic::Clusters
-            ]
-        );
+        assert_eq!(api_version, HALLEY_API_VERSION);
+        assert_eq!(topics, vec![EventTopic::Nodes, EventTopic::Clusters]);
         (control, events)
     }
 
-    fn node(id: u64, title: &str) -> halley_ipc::NodeInfo {
-        halley_ipc::NodeInfo {
-            id,
+    fn node(id: u64, title: &str) -> NodeInfo {
+        NodeInfo {
+            id: id.into(),
             title: title.into(),
             app_id: Some("test".into()),
             output: Some("DP-1".into()),
@@ -352,28 +364,28 @@ mod tests {
             parent: None,
             transient_for: None,
             child_popup_count: 0,
-            pos_x: 0.0,
-            pos_y: 0.0,
+            x: 0.0,
+            y: 0.0,
             width: 100.0,
             height: 100.0,
         }
     }
 
-    fn cluster(id: u64, name: &str) -> halley_ipc::ClusterSummary {
-        halley_ipc::ClusterSummary {
-            id,
+    fn cluster(id: u64, name: &str) -> ClusterSummary {
+        ClusterSummary {
+            id: id.into(),
             slot: None,
             name: name.into(),
             output: "DP-1".into(),
-            layout: ClusterLayoutKind::Tiling,
+            layout: ClusterLayout::Tiling,
             member_count: 1,
             active: true,
             focused: false,
         }
     }
 
-    fn snapshot(sequence: u64, id: u64) -> StateSnapshot {
-        StateSnapshot {
+    fn snapshot(sequence: u64, id: u64) -> Snapshot {
+        Snapshot {
             sequence,
             outputs: Vec::new(),
             nodes: vec![node(id, "initial")],
@@ -408,14 +420,14 @@ mod tests {
             steps.recv_timeout(Duration::from_secs(3)).unwrap();
             reply(
                 &events,
-                Response::Event(ApiEvent::NodeChanged {
+                Response::Event(Event::NodeChanged {
                     sequence: 11,
                     node: node(1, "changed"),
                 }),
             );
             reply(
                 &events,
-                Response::Event(ApiEvent::ClusterChanged {
+                Response::Event(Event::ClusterChanged {
                     sequence: 12,
                     cluster: cluster(1, "changed"),
                 }),
@@ -424,7 +436,7 @@ mod tests {
             if gap {
                 reply(
                     &events,
-                    Response::Event(ApiEvent::NodeAdded {
+                    Response::Event(Event::NodeAdded {
                         sequence: 14,
                         node: node(999, "must not be applied"),
                     }),
@@ -450,9 +462,9 @@ mod tests {
             steps.recv_timeout(Duration::from_secs(3)).unwrap();
             reply(
                 &events,
-                Response::Event(ApiEvent::NodeRemoved {
+                Response::Event(Event::NodeRemoved {
                     sequence: 101,
-                    id: 2,
+                    id: 2.into(),
                 }),
             );
             steps.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -466,6 +478,10 @@ mod tests {
             s.clusters.first().is_some_and(|c| c.name == "changed")
         });
         assert_eq!(changed.nodes[0].title, "changed");
+        assert_eq!(
+            changed.config_path.as_deref(),
+            Some(std::path::Path::new("/custom/halley.rune"))
+        );
         advance.send(()).unwrap();
         let fresh = wait_snapshot(&mut updates, |s| {
             assert!(
@@ -537,38 +553,13 @@ mod tests {
             let (control, events) = subscribe(&listener);
             reply(
                 &events,
-                Response::ApiError(ServerError {
-                    kind: ServerErrorKind::Unsupported,
-                    message: "no subscriptions".into(),
-                }),
+                Response::Error(Error::new(ErrorKind::Unsupported, "no subscriptions")),
             );
             for id in [1, 2] {
-                assert!(matches!(
-                    request(&control),
-                    Request::Node(halley_ipc::NodeRequest::List { .. })
-                ));
-                reply(
-                    &control,
-                    Response::NodeList(NodeListResponse {
-                        outputs: vec![NodeOutputGroup {
-                            output: "DP-1".into(),
-                            nodes: vec![node(id, "fallback")],
-                        }],
-                    }),
-                );
-                assert!(matches!(
-                    request(&control),
-                    Request::Cluster(halley_ipc::ClusterRequest::List { .. })
-                ));
-                reply(
-                    &control,
-                    Response::ClusterList(ClusterListResponse {
-                        outputs: vec![ClusterOutputGroup {
-                            output: "DP-1".into(),
-                            clusters: vec![cluster(id, "fallback")],
-                        }],
-                    }),
-                );
+                assert!(matches!(request(&control), Request::Nodes { .. }));
+                reply(&control, Response::Nodes(vec![node(id, "fallback")]));
+                assert!(matches!(request(&control), Request::Clusters { .. }));
+                reply(&control, Response::Clusters(vec![cluster(id, "fallback")]));
                 steps.recv_timeout(Duration::from_secs(3)).unwrap();
             }
         });
@@ -600,8 +591,9 @@ mod tests {
                 &pending,
                 Some(&wake),
                 LiveSnapshot {
-                    nodes: vec![node(id, "latest").into()],
+                    nodes: vec![node(id, "latest")],
                     clusters: Vec::new(),
+                    config_path: None,
                 },
             );
         }
@@ -614,6 +606,7 @@ mod tests {
             LiveSnapshot {
                 nodes: Vec::new(),
                 clusters: Vec::new(),
+                config_path: None,
             },
         );
         assert!(events.try_recv().is_ok());
