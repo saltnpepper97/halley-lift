@@ -726,7 +726,8 @@ pub fn bootstrap_default_config() {
     }
 }
 
-pub fn resolved_halley_config_path() -> PathBuf {
+/// Best-effort offline path; a connected compositor supplies the authoritative path.
+pub fn fallback_halley_config_path() -> PathBuf {
     if let Ok(path) = std::env::var("HALLEY_WL_CONFIG") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {

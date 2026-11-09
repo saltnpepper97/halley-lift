@@ -9,7 +9,7 @@ use halley_api::{
     NodeId, NodeKind, NodeSelector,
 };
 
-use crate::config::{LiftConfig, LiftModeConfig, default_config_path, resolved_halley_config_path};
+use crate::config::{LiftConfig, LiftModeConfig, default_config_path, fallback_halley_config_path};
 use crate::desktop_exec::{self, unescape};
 use crate::live::LiveUpdates;
 use crate::mode::LiftMode;
@@ -480,7 +480,7 @@ fn search_config(
             "Halley config",
             halley_config_path
                 .map(Path::to_path_buf)
-                .unwrap_or_else(resolved_halley_config_path)
+                .unwrap_or_else(fallback_halley_config_path)
                 .display()
                 .to_string(),
         ),
@@ -1397,7 +1397,7 @@ mod tests {
             LiftAction::OpenConfig { path } if path == "/custom/active-halley.rune")));
         index.halley_config_path = None;
         let results = index.search(&context(LiftMode::Config, "halley"));
-        let fallback = resolved_halley_config_path().display().to_string();
+        let fallback = fallback_halley_config_path().display().to_string();
         assert!(results.iter().any(|result| matches!(&result.action,
             LiftAction::OpenConfig { path } if path == &fallback)));
     }
