@@ -624,7 +624,10 @@ impl LiftApp {
 
     fn live_results_needed(&self) -> bool {
         let (mode, _) = self.effective_search();
-        matches!(mode, LiftMode::Nodes | LiftMode::Clusters)
+        matches!(
+            mode,
+            LiftMode::Nodes | LiftMode::Clusters | LiftMode::Config
+        )
     }
 
     fn draw(&mut self) -> Result<(), String> {
@@ -761,7 +764,7 @@ impl LiftApp {
             let (mode, _) = self.effective_search();
             if matches!(
                 mode,
-                LiftMode::General | LiftMode::Nodes | LiftMode::Clusters
+                LiftMode::General | LiftMode::Nodes | LiftMode::Clusters | LiftMode::Config
             ) {
                 self.refresh_results();
                 self.mark_redraw();
